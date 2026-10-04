@@ -34,6 +34,7 @@ import com.shatteredpixel.shatteredpixeldungeon.scenes.TitleScene;
 import com.shatteredpixel.shatteredpixeldungeon.ui.Icons;
 import com.shatteredpixel.shatteredpixeldungeon.ui.RedButton;
 import com.shatteredpixel.shatteredpixeldungeon.ui.Window;
+import com.watabou.utils.DeviceCompat;
 import com.watabou.noosa.Game;
 
 import java.io.IOException;
@@ -71,6 +72,17 @@ public class WndGame extends Window {
 				}
 			} );
 			curBtn.icon(Icons.get(Icons.CHALLENGE_COLOR));
+		}
+
+		if (DeviceCompat.isDebug()) {
+			addButton(curBtn = new RedButton(Messages.get(this, "jev_log")) {
+				@Override
+				protected void onClick() {
+					hide();
+					GameScene.show(new WndJevDebugLog());
+				}
+			});
+			curBtn.icon(Icons.get(Icons.INFO));
 		}
 
 		// Restart

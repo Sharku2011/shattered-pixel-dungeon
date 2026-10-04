@@ -145,6 +145,7 @@ import com.watabou.noosa.audio.Sample;
 import com.watabou.noosa.particles.Emitter;
 import com.watabou.noosa.tweeners.Tweener;
 import com.watabou.utils.Callback;
+import com.watabou.utils.DeviceCompat;
 import com.watabou.utils.GameMath;
 import com.watabou.utils.PlatformSupport;
 import com.watabou.utils.Point;
@@ -170,6 +171,7 @@ public class GameScene extends PixelScene {
 	private DungeonWallsTilemap walls;
 	private WallBlockingTilemap wallBlocking;
 	private FogOfWar fog;
+	private MobSquadOverlay squadOverlay;
 	private HeroSprite hero;
 
 	private MenuPane menu;
@@ -355,6 +357,13 @@ public class GameScene extends PixelScene {
 
 		fog = new FogOfWar( Dungeon.level.width(), Dungeon.level.height() );
 		add( fog );
+
+		if (DeviceCompat.isDebug()) {
+			//Development overlay stays above fog so squad bounds remain visible everywhere.
+			squadOverlay = new MobSquadOverlay();
+			add(squadOverlay);
+			squadOverlay.refresh();
+		}
 
 		spells = new Group();
 		add( spells );
@@ -1527,6 +1536,15 @@ public class GameScene extends PixelScene {
 						link.updateVisibility();
 					}
 				}
+			}
+			if (scene.squadOverlay != null) {
+				// Dungeon.observe() may run on the actor thread; creating SkinnedBlocks requires the GL context.
+				ShatteredPixelDungeon.runOnRenderThread(new Callback() {
+					@Override
+					public void call() {
+						if (scene != null && scene.squadOverlay != null) scene.squadOverlay.refresh();
+					}
+				});
 			}
 		}
 	}
