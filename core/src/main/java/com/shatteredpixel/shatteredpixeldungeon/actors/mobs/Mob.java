@@ -136,17 +136,38 @@ public abstract class Mob extends Char {
 	protected int enemyID = -1; //used for save/restore
 	protected boolean enemySeen;
 	protected boolean alerted = false;
+	/** Stable combat-group key assigned when a floor's monsters are created. */
+	int squadId = -1;
+	/** Prevents a dissolved squad member from being regrouped when a floor is restored. */
+	boolean squadDisbanded;
+	/** Whether the one-time Jev role-selection question is still pending for this squad. */
+	boolean squadRoleSelectionPending;
+	/** True once this monster received the spawn-time initial leader rewards. */
+	boolean initialLeaderBonusApplied;
+	/** Stable tactical role label; role labels no longer alter combat stats. */
+	String squadRole = "solo";
+	int monsterBalanceVersion = 2;
+	float spawnHpMultiplier = 1f;
+	float spawnDamageMultiplier = 1f;
+	float spawnAccuracyMultiplier = 1f;
+	float spawnDefenseMultiplier = 1f;
+	float spawnDrMultiplier = 1f;
+	float spawnSpeedMultiplier = 1f;
+	float spawnAttackDelayMultiplier = 1f;
+	float spawnLootMultiplier = 1f;
 
 	protected static final float TIME_TO_WAKE_UP = 1f;
 
 	protected boolean firstAdded = true;
 	protected void onAdd(){
 		if (firstAdded) {
+			MonsterStats.applyTo(this);
 			//modify health for ascension challenge if applicable, only on first add
 			float percent = HP / (float) HT;
 			HT = Math.round(HT * AscensionChallenge.statModifier(this));
 			HP = Math.round(HT * percent);
 			firstAdded = false;
+			MobSquads.refreshFallbackRoles(this);
 		}
 	}
 
@@ -154,6 +175,20 @@ public abstract class Mob extends Char {
 	private static final String SEEN	= "seen";
 	private static final String TARGET	= "target";
 	private static final String MAX_LVL	= "max_lvl";
+	private static final String SQUAD_ID = "squad_id";
+	private static final String SQUAD_DISBANDED = "squad_disbanded";
+	private static final String SQUAD_ROLE_PENDING = "squad_role_pending";
+	private static final String SQUAD_ROLE = "squad_role";
+	private static final String MONSTER_BALANCE_VERSION = "monster_balance_version";
+	private static final String SPAWN_HP_MULTIPLIER = "spawn_hp_multiplier";
+	private static final String SPAWN_DAMAGE_MULTIPLIER = "spawn_damage_multiplier";
+	private static final String SPAWN_ACCURACY_MULTIPLIER = "spawn_accuracy_multiplier";
+	private static final String SPAWN_DEFENSE_MULTIPLIER = "spawn_defense_multiplier";
+	private static final String SPAWN_DR_MULTIPLIER = "spawn_dr_multiplier";
+	private static final String SPAWN_SPEED_MULTIPLIER = "spawn_speed_multiplier";
+	private static final String SPAWN_ATTACK_DELAY_MULTIPLIER = "spawn_attack_delay_multiplier";
+	private static final String INITIAL_LEADER_BONUS_APPLIED = "initial_leader_bonus_applied";
+	private static final String SPAWN_LOOT_MULTIPLIER = "spawn_loot_multiplier";
 
 	private static final String ENEMY_ID	= "enemy_id";
 
@@ -186,6 +221,20 @@ public abstract class Mob extends Char {
 		bundle.put( SEEN, enemySeen );
 		bundle.put( TARGET, target );
 		bundle.put( MAX_LVL, maxLvl );
+		bundle.put( SQUAD_ID, squadId );
+		bundle.put( SQUAD_DISBANDED, squadDisbanded );
+		bundle.put( SQUAD_ROLE_PENDING, squadRoleSelectionPending );
+		bundle.put( SQUAD_ROLE, squadRole );
+		bundle.put( MONSTER_BALANCE_VERSION, monsterBalanceVersion );
+		bundle.put( SPAWN_HP_MULTIPLIER, spawnHpMultiplier );
+		bundle.put( SPAWN_DAMAGE_MULTIPLIER, spawnDamageMultiplier );
+		bundle.put( SPAWN_ACCURACY_MULTIPLIER, spawnAccuracyMultiplier );
+		bundle.put( SPAWN_DEFENSE_MULTIPLIER, spawnDefenseMultiplier );
+		bundle.put( SPAWN_DR_MULTIPLIER, spawnDrMultiplier );
+		bundle.put( SPAWN_SPEED_MULTIPLIER, spawnSpeedMultiplier );
+		bundle.put( SPAWN_ATTACK_DELAY_MULTIPLIER, spawnAttackDelayMultiplier );
+		bundle.put( INITIAL_LEADER_BONUS_APPLIED, initialLeaderBonusApplied );
+		bundle.put( SPAWN_LOOT_MULTIPLIER, spawnLootMultiplier );
 
 		if (enemy != null) {
 			bundle.put(ENEMY_ID, enemy.id() );
@@ -238,6 +287,21 @@ public abstract class Mob extends Char {
 		target = bundle.getInt( TARGET );
 
 		maxLvl = bundle.getInt(MAX_LVL);
+		squadId = bundle.contains(SQUAD_ID) ? bundle.getInt(SQUAD_ID) : -1;
+		squadDisbanded = bundle.getBoolean(SQUAD_DISBANDED);
+		squadRoleSelectionPending = bundle.contains(SQUAD_ROLE_PENDING)
+				? bundle.getBoolean(SQUAD_ROLE_PENDING) : squadId >= 0;
+		squadRole = bundle.contains(SQUAD_ROLE) ? bundle.getString(SQUAD_ROLE) : "solo";
+		monsterBalanceVersion = bundle.contains(MONSTER_BALANCE_VERSION) ? bundle.getInt(MONSTER_BALANCE_VERSION) : 0;
+		spawnHpMultiplier = bundle.contains(SPAWN_HP_MULTIPLIER) ? bundle.getFloat(SPAWN_HP_MULTIPLIER) : 1f;
+		spawnDamageMultiplier = bundle.contains(SPAWN_DAMAGE_MULTIPLIER) ? bundle.getFloat(SPAWN_DAMAGE_MULTIPLIER) : 1f;
+		spawnAccuracyMultiplier = bundle.contains(SPAWN_ACCURACY_MULTIPLIER) ? bundle.getFloat(SPAWN_ACCURACY_MULTIPLIER) : 1f;
+		spawnDefenseMultiplier = bundle.contains(SPAWN_DEFENSE_MULTIPLIER) ? bundle.getFloat(SPAWN_DEFENSE_MULTIPLIER) : 1f;
+		spawnDrMultiplier = bundle.contains(SPAWN_DR_MULTIPLIER) ? bundle.getFloat(SPAWN_DR_MULTIPLIER) : 1f;
+		spawnSpeedMultiplier = bundle.contains(SPAWN_SPEED_MULTIPLIER) ? bundle.getFloat(SPAWN_SPEED_MULTIPLIER) : 1f;
+		spawnAttackDelayMultiplier = bundle.contains(SPAWN_ATTACK_DELAY_MULTIPLIER) ? bundle.getFloat(SPAWN_ATTACK_DELAY_MULTIPLIER) : 1f;
+		initialLeaderBonusApplied = bundle.getBoolean(INITIAL_LEADER_BONUS_APPLIED);
+		spawnLootMultiplier = bundle.contains(SPAWN_LOOT_MULTIPLIER) ? bundle.getFloat(SPAWN_LOOT_MULTIPLIER) : 1f;
 
 		if (bundle.contains(ENEMY_ID)) {
 			enemyID = bundle.getInt(ENEMY_ID);
@@ -288,6 +352,7 @@ public abstract class Mob extends Char {
 		enemy = chooseEnemy();
 		
 		boolean enemyInFOV = enemy != null && enemy.isAlive() && fieldOfView[enemy.pos] && enemy.invisible <= 0;
+		MobSquads.maintainCohesion(this);
 
 		//prevents action, but still updates enemy seen status
 		if (buff(Feint.AfterImage.FeintConfusion.class) != null){
@@ -725,6 +790,35 @@ public abstract class Mob extends Char {
 		}
 	}
 
+	/** Moves toward an open tile adjacent to the enemy, preferring space away from squadmates. */
+	private boolean moveToFlankingPosition(Char targetChar) {
+		if (targetChar == null || Dungeon.level == null) return false;
+		int bestCell = -1;
+		int bestSpacing = Integer.MIN_VALUE;
+		for (int offset : PathFinder.NEIGHBOURS8) {
+			int cell = targetChar.pos + offset;
+			if (cell < 0 || cell >= Dungeon.level.length()
+					|| Math.abs(cell % Dungeon.level.width() - targetChar.pos % Dungeon.level.width()) > 1
+					|| Math.abs(cell / Dungeon.level.width() - targetChar.pos / Dungeon.level.width()) > 1) continue;
+			if (!Dungeon.level.passable[cell]
+					|| Dungeon.level.avoid[cell] || Actor.findChar(cell) != null) continue;
+			int spacing = 0;
+			if (squadId >= 0) {
+				for (Mob member : MobSquads.members(Dungeon.level, squadId)) {
+					if (member != this && member.enemy == targetChar) {
+						spacing += Dungeon.level.distance(cell, member.pos);
+					}
+				}
+			}
+			if (spacing > bestSpacing) {
+				bestSpacing = spacing;
+				bestCell = cell;
+			}
+		}
+		if (bestCell == -1 || bestCell == pos) return false;
+		return getCloser(bestCell);
+	}
+
 	@Override
 	public void move(int step, boolean travelling) {
 		super.move(step, travelling);
@@ -753,7 +847,7 @@ public abstract class Mob extends Char {
 	public float attackDelay() {
 		float delay = 1f;
 		if ( buff(Adrenaline.class) != null) delay /= 1.5f;
-		return delay;
+		return delay * MonsterStats.attackDelayMultiplier(this);
 	}
 	
 	protected boolean doAttack( Char enemy ) {
@@ -863,7 +957,8 @@ public abstract class Mob extends Char {
 
 	@Override
 	public float speed() {
-		return super.speed() * AscensionChallenge.enemySpeedModifier(this);
+		return super.speed() * MonsterStats.speedMultiplier(this)
+				* AscensionChallenge.enemySpeedModifier(this);
 	}
 
 	public final boolean surprisedBy( Char enemy ){
@@ -882,10 +977,23 @@ public abstract class Mob extends Char {
 	}
 
 	public void aggro( Char ch ) {
+		boolean newlyEngaged = state != HUNTING;
 		enemy = ch;
 		if (state != PASSIVE){
 			state = HUNTING;
 		}
+		if (newlyEngaged && state == HUNTING && ch != null) MobSquads.alert(this, ch.pos);
+	}
+
+	/** Tactical capability used both by local combat behavior and Jev's squad plan. */
+	String tacticalIntelligence() {
+		if (Char.hasProp(this, Property.BOSS) || Char.hasProp(this, Property.MINIBOSS)) return "strategic";
+		String type = getClass().getSimpleName();
+		if (type.equals("Gnoll") || type.equals("Guard") || type.equals("Thief")
+				|| type.equals("Bandit") || type.contains("Shaman") || type.equals("Warlock") || type.equals("Necromancer")
+				|| type.equals("DM100") || type.equals("DM200") || type.equals("DM201")
+				|| type.equals("Golem") || type.equals("Tengu") || type.equals("Monk")) return "tactical";
+		return "instinctive";
 	}
 
 	public void clearEnemy(){
@@ -983,6 +1091,7 @@ public abstract class Mob extends Char {
 	
 	@Override
 	public void die( Object cause ) {
+		MobSquads.leaderDied(this);
 
 		if (cause == Chasm.class){
 			//50% chance to round up, 50% to round down
@@ -1036,7 +1145,7 @@ public abstract class Mob extends Char {
 	}
 
 	public float lootChance(){
-		float lootChance = this.lootChance;
+		float lootChance = this.lootChance * MonsterStats.lootMultiplier(this);
 
 		float dropBonus = RingOfWealth.dropChanceMultiplier( Dungeon.hero );
 
@@ -1290,6 +1399,7 @@ public abstract class Mob extends Char {
 			alerted = true;
 			state = HUNTING;
 			target = enemy.pos;
+			MobSquads.alert(Mob.this, enemy.pos);
 			
 			return true;
 		}
@@ -1325,6 +1435,37 @@ public abstract class Mob extends Char {
 		@Override
 		public boolean act( boolean enemyInFOV, boolean justAlerted ) {
 			enemySeen = enemyInFOV;
+
+			// Jev supplies a cached squad tactic; local AI resolves legal per-turn actions.
+			String tactic = JevMobAI.tacticFor(Mob.this);
+			String intelligence = tacticalIntelligence();
+			boolean hasValidatedTacticalGoal = false;
+			if (enemyInFOV && enemy != null) {
+				String maneuver = "flank".equals(tactic) ? "flank"
+						: "escort_ranged".equals(tactic) ? ("tank".equals(squadRole) ? "escort" : "flank") : null;
+				boolean canFollowPlan = maneuver != null
+						&& (!"instinctive".equals(intelligence) || "escort".equals(maneuver));
+				int destination = canFollowPlan ? JevMobAI.destinationFor(Mob.this, maneuver) : -1;
+				hasValidatedTacticalGoal = destination >= 0;
+				if (destination >= 0 && destination != pos) {
+					int oldPos = pos;
+					if (getCloser(destination)) {
+						JevMobAI.logMoveStep(Mob.this, maneuver, oldPos, pos, destination);
+						spend(1 / speed());
+						return moveSprite(oldPos, pos);
+					}
+					JevMobAI.logMoveBlocked(Mob.this, maneuver, oldPos, destination);
+				}
+			}
+			if ("flank".equals(tactic) && !"instinctive".equals(intelligence)
+					&& enemyInFOV && enemy != null && !canAttack(enemy) && !hasValidatedTacticalGoal) {
+				int oldPos = pos;
+				if (moveToFlankingPosition(enemy)) {
+					spend(1 / speed());
+					return moveSprite(oldPos, pos);
+				}
+			}
+
 			if (enemyInFOV && !isCharmedBy( enemy ) && canAttack( enemy )) {
 
 				recentlyAttackedBy.clear();

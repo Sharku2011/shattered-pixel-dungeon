@@ -319,6 +319,7 @@ public abstract class Level implements Bundlable {
 		cleanWalls();
 		
 		createMobs();
+		com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.assign(this);
 		createItems();
 
 		Random.popGenerator();
@@ -360,6 +361,7 @@ public abstract class Level implements Bundlable {
 			}
 		}
 		createMobs();
+		com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.assign(this);
 	}
 
 	public void playLevelMusic(){
@@ -715,6 +717,11 @@ public abstract class Level implements Bundlable {
 		return 0;
 	}
 
+	/** Maximum number of ordinary enemy squads allowed to inhabit this level. */
+	public int squadLimit() {
+		return Integer.MAX_VALUE;
+	}
+
 	public int mobCount(){
 		float count = 0;
 		for (Mob mob : Dungeon.level.mobs.toArray(new Mob[0])){
@@ -723,6 +730,18 @@ public abstract class Level implements Bundlable {
 			}
 		}
 		return Math.round(count);
+	}
+
+	/** Counts squad-eligible ordinary enemies as actual individuals. */
+	public int mobPopulationCount(){
+		int count = 0;
+		for (Mob mob : mobs.toArray(new Mob[0])){
+			if (mob.alignment == Char.Alignment.ENEMY
+					&& !mob.properties().contains(Char.Property.BOSS)
+					&& !mob.properties().contains(Char.Property.MINIBOSS)
+					&& !mob.properties().contains(Char.Property.IMMOVABLE)) count++;
+		}
+		return count;
 	}
 
 	public Mob findMob( int pos ){
@@ -768,6 +787,11 @@ public abstract class Level implements Bundlable {
 	}
 
 	public boolean spawnMob(int disLimit){
+		return spawnMob(disLimit, false);
+	}
+
+	/** Ambient respawns obey both the level's population and squad caps. */
+	public boolean spawnMob(int disLimit, boolean enforceLimits){
 		PathFinder.buildDistanceMap(Dungeon.hero.pos, BArray.or(passable, avoid, null));
 
 		Mob mob = createMob();
@@ -781,6 +805,12 @@ public abstract class Level implements Bundlable {
 		} while ((mob.pos == -1 || PathFinder.distance[mob.pos] < disLimit) && tries > 0);
 
 		if (Dungeon.hero.isAlive() && mob.pos != -1 && PathFinder.distance[mob.pos] >= disLimit) {
+			if (enforceLimits && (mobPopulationCount() >= mobLimit()
+					|| mobCount() + mob.spawningWeight() > mobLimit())) return false;
+			boolean assigned = enforceLimits
+					? com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.assignSpawn(this, mob, squadLimit())
+					: com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.assignSpawn(this, mob);
+			if (!assigned) return false;
 			GameScene.add( mob );
 			if (!mob.buffs(ChampionEnemy.class).isEmpty()){
 				GLog.w(Messages.get(ChampionEnemy.class, "warn"));
@@ -789,6 +819,123 @@ public abstract class Level implements Bundlable {
 		} else {
 			return false;
 		}
+	}
+
+	/** Spawns an ambient respawn as a nearby, two-member squad within both caps. */
+	public boolean spawnMobSquad(int disLimit){
+		if (Dungeon.hero == null || !Dungeon.hero.isAlive()
+				|| mobPopulationCount() + 2 > mobLimit()
+				|| com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.squadCount(this) >= squadLimit()) {
+			com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.logSpawn("respawn_blocked",
+					"floor=" + Dungeon.depth + " population=" + mobPopulationCount() + "/" + mobLimit()
+							+ " squads=" + com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.squadCount(this)
+							+ "/" + squadLimit() + " reason=population_or_squad_cap");
+			return false;
+		}
+
+		PathFinder.buildDistanceMap(Dungeon.hero.pos, BArray.or(passable, avoid, null));
+		Mob leader = createMob();
+		Mob member = createMob();
+		if (leader.state != leader.PASSIVE) leader.state = leader.WANDERING;
+		if (member.state != member.PASSIVE) member.state = member.WANDERING;
+
+		ArrayList<Integer> anchorCandidates = new ArrayList<>();
+		int passableCells = 0;
+		int visibleBlocked = 0;
+		int occupied = 0;
+		int largeBlocked = 0;
+		int placeable = 0;
+		int unreachable = 0;
+		int maxDistance = 0;
+		for (int cell = 0; cell < length(); cell++) {
+			if (!passable[cell]) continue;
+			passableCells++;
+			if (isSpawnCellVisible(cell)) {
+				visibleBlocked++;
+				continue;
+			}
+			if (Actor.findChar(cell) != null) {
+				occupied++;
+				continue;
+			}
+			if (Char.hasProp(leader, Char.Property.LARGE) && !openSpace[cell]) {
+				largeBlocked++;
+				continue;
+			}
+			placeable++;
+			int distance = PathFinder.distance[cell];
+			if (distance == Integer.MAX_VALUE) {
+				unreachable++;
+				continue;
+			}
+			maxDistance = Math.max(maxDistance, distance);
+			if (distance >= disLimit) anchorCandidates.add(cell);
+		}
+
+		if (anchorCandidates.isEmpty()) {
+			String reason = placeable == 0 ? "no_free_anchor" : "distance_limit";
+			com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.logSpawn("respawn_blocked",
+					"floor=" + Dungeon.depth + " reason=" + reason + " mob=" + leader.getClass().getSimpleName()
+							+ " disLimit=" + disLimit + " passable=" + passableCells
+							+ " visibleBlocked=" + visibleBlocked + " occupied=" + occupied
+							+ " largeBlocked=" + largeBlocked + " placeable=" + placeable
+							+ " unreachable=" + unreachable + " distanceQualified=0 maxReachableDistance=" + maxDistance
+							+ " debugVision=" + Dungeon.isSquadDebugVisionActive()
+							+ " hero=" + Dungeon.hero.pos % width + ":" + Dungeon.hero.pos / width);
+			return false;
+		}
+		leader.pos = Random.element(anchorCandidates);
+
+		int memberCell = -1;
+		for (int radius = 1; radius <= 2 && memberCell < 0; radius++) {
+			for (int dy = -radius; dy <= radius && memberCell < 0; dy++) {
+				for (int dx = -radius; dx <= radius; dx++) {
+					if (Math.max(Math.abs(dx), Math.abs(dy)) != radius) continue;
+					int x = leader.pos % width + dx;
+					int y = leader.pos / width + dy;
+					if (x < 0 || x >= width || y < 0 || y >= height) continue;
+					int cell = x + y * width;
+					if (passable[cell] && !isSpawnCellVisible(cell) && Actor.findChar(cell) == null
+							&& PathFinder.distance[cell] >= disLimit
+							&& (!Char.hasProp(member, Char.Property.LARGE) || openSpace[cell])) {
+						memberCell = cell;
+						break;
+					}
+				}
+			}
+		}
+		if (memberCell < 0) {
+			com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.logSpawn("respawn_blocked",
+					"floor=" + Dungeon.depth + " anchor=" + leader.pos % width + ":" + leader.pos / width
+							+ " reason=no_adjacent_cell");
+			return false;
+		}
+		if (mobCount() + leader.spawningWeight() + member.spawningWeight() > mobLimit()) {
+			com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.logSpawn("respawn_blocked",
+					"floor=" + Dungeon.depth + " reason=weighted_population_cap");
+			return false;
+		}
+
+		int squadId = leader.id();
+		com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.setSquadId(leader, squadId);
+		com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.setSquadId(member, squadId);
+		com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.assignRoles(leader, member);
+		member.pos = memberCell;
+		GameScene.add(leader);
+		GameScene.add(member);
+		com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.logSpawn("respawn_squad_spawned",
+				"floor=" + Dungeon.depth + " squadId=" + squadId
+						+ " leader=" + leader.getClass().getSimpleName() + "#" + leader.id()
+						+ "@" + leader.pos % width + ":" + leader.pos / width
+						+ " member=" + member.getClass().getSimpleName() + "#" + member.id()
+						+ "@" + member.pos % width + ":" + member.pos / width
+						+ " population=" + mobPopulationCount() + "/" + mobLimit()
+						+ " squads=" + com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.squadCount(this)
+						+ "/" + squadLimit());
+		if (!leader.buffs(ChampionEnemy.class).isEmpty() || !member.buffs(ChampionEnemy.class).isEmpty()){
+			GLog.w(Messages.get(ChampionEnemy.class, "warn"));
+		}
+		return true;
 	}
 	
 	public int randomRespawnCell( Char ch ) {
@@ -802,11 +949,18 @@ public abstract class Level implements Bundlable {
 
 			cell = Random.Int( length() );
 
-		} while ((Dungeon.level == this && heroFOV[cell])
+		} while (isSpawnCellVisible(cell)
 				|| !passable[cell]
 				|| (Char.hasProp(ch, Char.Property.LARGE) && !openSpace[cell])
 				|| Actor.findChar( cell ) != null);
 		return cell;
+	}
+
+	/**
+	 * Debug vision reveals heroFOV for rendering but should not block mob spawns.
+	 */
+	public boolean isSpawnCellVisible(int cell) {
+		return Dungeon.level == this && heroFOV[cell] && !Dungeon.isSquadDebugVisionActive();
 	}
 	
 	public int randomDestination( Char ch ) {

@@ -31,6 +31,8 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Light;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.MagicalSight;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.MindVision;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.RevealedArea;
+import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.SquadDebugVision;
+import com.watabou.utils.DeviceCompat;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Terror;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Talent;
@@ -92,6 +94,7 @@ import java.io.IOException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.Locale;
@@ -184,6 +187,10 @@ public class Dungeon {
 
 	public static Hero hero;
 	public static Level level;
+
+	public static boolean isSquadDebugVisionActive() {
+		return DeviceCompat.isDebug() && hero != null && hero.buff(SquadDebugVision.class) != null;
+	}
 
 	public static QuickSlot quickslot = new QuickSlot();
 	
@@ -479,6 +486,10 @@ public class Dungeon {
 		
 		Dungeon.level = level;
 		hero.pos = pos;
+		// Older saves and special spawn paths may contain unassigned ordinary mobs.
+		// Group nearby mobs when entering the floor so saved floors use the same
+		// squad behavior as newly generated floors.
+		com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.assign(level);
 
 		if (hero.buff(AscensionChallenge.class) != null){
 			hero.buff(AscensionChallenge.class).onLevelSwitch();
@@ -487,6 +498,11 @@ public class Dungeon {
 		Mob.restoreAllies( level, pos );
 
 		Actor.init();
+		if (DeviceCompat.isDebug()) {
+			com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff.affect(hero, SquadDebugVision.class);
+		} else {
+			com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff.detach(hero, SquadDebugVision.class);
+		}
 
 		level.addRespawner();
 		
@@ -501,6 +517,7 @@ public class Dungeon {
 				}
 			}
 		}
+		com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.logSnapshot(level, "level_enter");
 		
 		Light light = hero.buff( Light.class );
 		hero.viewDistance = light == null ? level.viewDistance : Math.max( Light.DISTANCE, level.viewDistance );
@@ -910,8 +927,11 @@ public class Dungeon {
 		if (level == null) {
 			return;
 		}
+		boolean squadDebugVision = isSquadDebugVisionActive();
+		if (squadDebugVision) dist = Math.max(level.width(), level.height());
 		
 		level.updateFieldOfView(hero, level.heroFOV);
+		if (squadDebugVision) Arrays.fill(level.heroFOV, true);
 
 		int x = hero.pos % level.width();
 		int y = hero.pos / level.width();

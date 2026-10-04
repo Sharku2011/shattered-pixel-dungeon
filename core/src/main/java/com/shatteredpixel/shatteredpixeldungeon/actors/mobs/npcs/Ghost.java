@@ -24,6 +24,7 @@ package com.shatteredpixel.shatteredpixeldungeon.actors.mobs.npcs;
 import com.shatteredpixel.shatteredpixeldungeon.Assets;
 import com.shatteredpixel.shatteredpixeldungeon.Dungeon;
 import com.shatteredpixel.shatteredpixeldungeon.Statistics;
+import com.shatteredpixel.shatteredpixeldungeon.actors.Actor;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Char;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.AscensionChallenge;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
@@ -54,6 +55,8 @@ import com.watabou.noosa.audio.Sample;
 import com.watabou.utils.Bundle;
 import com.watabou.utils.Callback;
 import com.watabou.utils.Random;
+
+import java.util.ArrayList;
 
 public class Ghost extends NPC {
 
@@ -182,7 +185,7 @@ public class Ghost extends NPC {
 					txt_quest = Messages.get(this, "crab_1", Messages.titleCase(Dungeon.hero.name())); break;
 			}
 
-			questBoss.pos = Dungeon.level.randomRespawnCell( this );
+			questBoss.pos = questBossSpawnCell(questBoss);
 
 			if (questBoss.pos != -1) {
 				GameScene.add(questBoss);
@@ -211,6 +214,28 @@ public class Ghost extends NPC {
 		}
 
 		return true;
+	}
+
+	private int questBossSpawnCell(Mob questBoss) {
+		// Use the boss's properties rather than the ghost's LARGE property. The
+		// ghost is marked large only to keep it in its room; that should not
+		// constrain where its quest boss can appear.
+		int cell = Dungeon.level.randomRespawnCell(questBoss);
+		if (cell >= 0) return cell;
+
+		// randomRespawnCell only samples 30 cells. A valid cell may still exist
+		// on a crowded floor, so scan the map before giving up on the interaction.
+		ArrayList<Integer> candidates = new ArrayList<>();
+		for (int i = 0; i < Dungeon.level.length(); i++) {
+			if (!Dungeon.level.passable[i]
+					|| Dungeon.level.isSpawnCellVisible(i)
+					|| Actor.findChar(i) != null
+					|| (Char.hasProp(questBoss, Char.Property.LARGE) && !Dungeon.level.openSpace[i])) {
+				continue;
+			}
+			candidates.add(i);
+		}
+		return candidates.isEmpty() ? -1 : Random.element(candidates);
 	}
 
 	public static class Quest {

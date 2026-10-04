@@ -93,6 +93,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 
 public abstract class RegularLevel extends Level {
+	private int mobLimitVariation = -1;
 	
 	protected ArrayList<Room> rooms;
 	
@@ -209,17 +210,32 @@ public abstract class RegularLevel extends Level {
 			else                            return 10;
 		}
 
-		int mobs = 3 + Dungeon.depth % 5 + Random.Int(3);
+		// Keep the floor's respawn cap consistent with the initial population.
+		// This value is queried every turn by MobSpawner, so rerolling here made
+		// the effective cap fluctuate while the player remained on the floor.
+		if (mobLimitVariation < 0) mobLimitVariation = Random.Int(3);
+		int mobs = 3 + Dungeon.depth % 5 + mobLimitVariation;
 		if (feeling == Feeling.LARGE){
 			mobs = (int)Math.ceil(mobs * 1.33f);
 		}
 		return mobs;
 	}
+
+	@Override
+	public int squadLimit() {
+		if (Dungeon.depth <= 1) return Dungeon.depth == 1 ? 8 : 0;
+		// Regular enemies spawn as pairs or trios, so this cap prevents the
+		// population from fragmenting into too many isolated groups.
+		return Math.max(1, (mobLimit() + 1) / 2);
+	}
 	
 	@Override
 	protected void createMobs() {
 		//on floor 1, 8 pre-set mobs are created so the player can get level 2.
-		int mobsToSpawn = Dungeon.depth == 1 ? 8 : mobLimit();
+		int populationLimit = Dungeon.depth == 1 ? 8 : mobLimit();
+		int mobsToSpawn = Math.max(0, populationLimit - mobPopulationCount());
+		int squadsToSpawn = Math.max(0, squadLimit()
+				- com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.squadCount(this));
 
 		ArrayList<Room> stdRooms = new ArrayList<>();
 		for (Room room : rooms) {
@@ -230,7 +246,13 @@ public abstract class RegularLevel extends Level {
 			}
 		}
 		Random.shuffle(stdRooms);
+		if (stdRooms.isEmpty()) {
+			com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.logSpawn("initial_blocked",
+					"floor=" + Dungeon.depth + " reason=no_standard_rooms remaining=" + mobsToSpawn);
+			return;
+		}
 		Iterator<Room> stdRoomIter = stdRooms.iterator();
+		int failedRoomPlacements = 0;
 
 		//enemies cannot be within a 8-tile FOV or 8-tile open space walk from the entrance
 		boolean[] entranceFOV = new boolean[length()];
@@ -251,59 +273,66 @@ public abstract class RegularLevel extends Level {
 
 		PathFinder.buildDistanceMap(entrance(), entranceWalkable, 8);
 
-		Mob mob = null;
-		while (mobsToSpawn > 0) {
-			if (mob == null) mob = createMob();
+		com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.logSpawn("initial_start",
+				"floor=" + Dungeon.depth + " targetMobs=" + populationLimit
+						+ " existingMobs=" + mobPopulationCount()
+						+ " targetSquads=" + squadLimit()
+						+ " existingSquads=" + com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.squadCount(this)
+						+ " standardRoomSlots=" + stdRooms.size());
+
+		while (mobsToSpawn > 0 && squadsToSpawn > 0) {
 			Room roomToSpawn;
-			
 			if (!stdRoomIter.hasNext()) {
 				stdRoomIter = stdRooms.iterator();
 			}
 			roomToSpawn = stdRoomIter.next();
 
-			int tries = 30;
-			do {
-				mob.pos = pointToCell(roomToSpawn.random());
-				tries--;
-			} while (tries >= 0 && (findMob(mob.pos) != null
-					|| entranceFOV[mob.pos] || PathFinder.distance[mob.pos] != Integer.MAX_VALUE
-					|| !passable[mob.pos]
-					|| solid[mob.pos]
-					|| !roomToSpawn.canPlaceCharacter(cellToPoint(mob.pos), this)
-					|| mob.pos == exit()
-					|| traps.get(mob.pos) != null || plants.get(mob.pos) != null
-					|| (!openSpace[mob.pos] && mob.properties().contains(Char.Property.LARGE))));
-
-			if (tries >= 0) {
-				mobsToSpawn--;
-				mobs.add(mob);
-				mob = null;
-
-				//chance to add a second mob to this room, except on floor 1
-				if (Dungeon.depth > 1 && mobsToSpawn > 0 && Random.Int(4) == 0){
-					mob = createMob();
-
-					tries = 30;
-					do {
-						mob.pos = pointToCell(roomToSpawn.random());
-						tries--;
-					} while (tries >= 0 && (findMob(mob.pos) != null
-							|| entranceFOV[mob.pos] || PathFinder.distance[mob.pos] != Integer.MAX_VALUE
-							|| !passable[mob.pos]
-							|| solid[mob.pos]
-							|| !roomToSpawn.canPlaceCharacter(cellToPoint(mob.pos), this)
-							|| mob.pos == exit()
-							|| traps.get(mob.pos) != null || plants.get(mob.pos) != null
-							|| (!openSpace[mob.pos] && mob.properties().contains(Char.Property.LARGE))));
-
-					if (tries >= 0) {
-						mobsToSpawn--;
-						mobs.add(mob);
-						mob = null;
-					}
+			// Partition the remaining population into pairs/trios. Avoid leaving a
+			// one-monster tail where a previous random 2/3 split created a singleton.
+			int squadSize = Dungeon.depth <= 1 ? 1
+					: mobsToSpawn == 1 ? 1 : mobsToSpawn % 2 == 1 && mobsToSpawn >= 3 ? 3 : 2;
+			ArrayList<Mob> squad = new ArrayList<>();
+			for (int i = 0; i < squadSize; i++) squad.add(createMob());
+			ArrayList<Integer> spawnCells = findSquadSpawnCells(roomToSpawn, squad, entranceFOV);
+			if (spawnCells == null) {
+				failedRoomPlacements++;
+				com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.logSpawn("initial_room_rejected",
+						"floor=" + Dungeon.depth + " room=" + roomToSpawn.getClass().getSimpleName()
+								+ " requestedMembers=" + squadSize + " failures=" + failedRoomPlacements
+								+ " reason=no_safe_formation");
+				if (failedRoomPlacements >= stdRooms.size()) {
+					com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.logSpawn("initial_blocked",
+							"floor=" + Dungeon.depth + " reason=no_safe_formation remainingMobs=" + mobsToSpawn
+									+ " remainingSquads=" + squadsToSpawn);
+					break;
 				}
+				continue;
 			}
+
+			failedRoomPlacements = 0;
+			int squadId = squad.get(0).id();
+			StringBuilder members = new StringBuilder();
+			for (int i = 0; i < squad.size(); i++) {
+				Mob member = squad.get(i);
+				member.pos = spawnCells.get(i);
+				com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.setSquadId(member, squadId);
+				mobs.add(member);
+				if (i > 0) members.append(',');
+				members.append(member.getClass().getSimpleName()).append('#').append(member.id())
+						.append('@').append(member.pos % width()).append(':').append(member.pos / width());
+			}
+			mobsToSpawn -= squad.size();
+			squadsToSpawn--;
+			com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.logSpawn("initial_squad_spawned",
+					"floor=" + Dungeon.depth + " squadId=" + squadId + " members=" + members
+							+ " population=" + mobPopulationCount() + "/" + populationLimit
+							+ " squads=" + com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.squadCount(this)
+							+ "/" + squadLimit());
 		}
+		com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.logSpawn("initial_complete",
+				"floor=" + Dungeon.depth + " population=" + mobPopulationCount() + "/" + populationLimit
+						+ " squads=" + com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MobSquads.squadCount(this)
+						+ "/" + squadLimit() + " unfilledMobs=" + mobsToSpawn);
 
 		for (Mob m : mobs){
 			if (map[m.pos] == Terrain.HIGH_GRASS || map[m.pos] == Terrain.FURROWED_GRASS) {
@@ -313,6 +342,51 @@ public abstract class RegularLevel extends Level {
 
 		}
 
+	}
+
+	private ArrayList<Integer> findSquadSpawnCells(Room room, ArrayList<Mob> squad, boolean[] entranceFOV) {
+		ArrayList<Point> candidates = room.charPlaceablePoints(this);
+		Random.shuffle(candidates);
+		for (Point point : candidates) {
+			int anchor = pointToCell(point);
+			if (!validSquadSpawnCell(room, squad.get(0), anchor, entranceFOV)) continue;
+			ArrayList<Integer> cells = new ArrayList<>();
+			cells.add(anchor);
+
+			for (int memberIndex = 1; memberIndex < squad.size(); memberIndex++) {
+				Mob member = squad.get(memberIndex);
+				int bestCell = -1;
+				int bestDistance = 3;
+				for (Point candidatePoint : candidates) {
+					int cell = pointToCell(candidatePoint);
+					int distance = distance(cell, anchor);
+					if (cells.contains(cell) || distance > 2 || distance >= bestDistance
+							|| !validSquadSpawnCell(room, member, cell, entranceFOV)) continue;
+					bestCell = cell;
+					bestDistance = distance;
+				}
+				if (bestCell == -1) {
+					cells.clear();
+					break;
+				}
+				cells.add(bestCell);
+			}
+			if (cells.size() == squad.size()) return cells;
+		}
+		return null;
+	}
+
+	private boolean validSquadSpawnCell(Room room, Mob mob, int cell, boolean[] entranceFOV) {
+		return findMob(cell) == null
+				&& !entranceFOV[cell]
+				&& PathFinder.distance[cell] == Integer.MAX_VALUE
+				&& passable[cell]
+				&& !solid[cell]
+				&& room.canPlaceCharacter(cellToPoint(cell), this)
+				&& cell != exit()
+				&& traps.get(cell) == null
+				&& plants.get(cell) == null
+				&& (!mob.properties().contains(Char.Property.LARGE) || openSpace[cell]);
 	}
 
 	@Override
@@ -888,12 +962,15 @@ public abstract class RegularLevel extends Level {
 	public void storeInBundle( Bundle bundle ) {
 		super.storeInBundle( bundle );
 		bundle.put( "rooms", rooms );
+		bundle.put( "mob_limit_variation", mobLimitVariation );
 	}
 	
 	@SuppressWarnings("unchecked")
 	@Override
 	public void restoreFromBundle( Bundle bundle ) {
 		super.restoreFromBundle( bundle );
+		mobLimitVariation = bundle.contains("mob_limit_variation")
+				? bundle.getInt("mob_limit_variation") : -1;
 		
 		rooms = new ArrayList<>( (Collection<Room>) ((Collection<?>) bundle.getCollection( "rooms" )) );
 		for (Room r : rooms) {

@@ -38,16 +38,21 @@ public class MobSpawner extends Actor {
 	@Override
 	protected boolean act() {
 
-		if (Dungeon.level.mobCount() < Dungeon.level.mobLimit()) {
+		if (Dungeon.level.mobPopulationCount() + 2 <= Dungeon.level.mobLimit()
+				&& MobSquads.squadCount(Dungeon.level) < Dungeon.level.squadLimit()) {
 
-			if (Dungeon.level.spawnMob(12)){
+			if (Dungeon.level.spawnMobSquad(12)){
 				spend(Dungeon.level.respawnCooldown());
 			} else {
-				//try again in 1 turn
-				spend(TICK);
+				//Repeatedly retrying an unchanged map only floods the spawn log.
+				spend(Dungeon.level.respawnCooldown());
 			}
 
 		} else {
+			MobSquads.logSpawn("respawn_wait",
+					"floor=" + Dungeon.depth + " population=" + Dungeon.level.mobPopulationCount()
+							+ "/" + Dungeon.level.mobLimit() + " squads=" + MobSquads.squadCount(Dungeon.level)
+							+ "/" + Dungeon.level.squadLimit() + " reason=cap");
 			spend(Dungeon.level.respawnCooldown());
 		}
 

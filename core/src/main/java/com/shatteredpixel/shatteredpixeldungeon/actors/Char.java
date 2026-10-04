@@ -83,6 +83,8 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.hero.abilities.duelist.Ch
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.abilities.rogue.DeathMark;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.abilities.warrior.Endure;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.spells.AuraOfProtection;
+import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob;
+import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MonsterStats;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.spells.BeamingRay;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.spells.GuidingLight;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.spells.LifeLinkSpell;
@@ -387,7 +389,8 @@ public abstract class Char extends Actor {
 
 		} else if (hit( this, enemy, accMulti, false )) {
 			
-			int dr = Math.round(enemy.drRoll() * AscensionChallenge.statModifier(enemy));
+			float drMultiplier = enemy instanceof Mob ? MonsterStats.drMultiplier((Mob) enemy) : 1f;
+			int dr = Math.round(enemy.drRoll() * drMultiplier * AscensionChallenge.statModifier(enemy));
 			
 			if (this instanceof Hero){
 				Hero h = (Hero)this;
@@ -414,6 +417,7 @@ public abstract class Char extends Actor {
 			} else {
 				dmg = damageRoll();
 			}
+			if (this instanceof Mob) dmg *= MonsterStats.damageMultiplier((Mob) this);
 
 			dmg = dmg*dmgMulti;
 
@@ -619,6 +623,8 @@ public abstract class Char extends Actor {
 	public static boolean hit( Char attacker, Char defender, float accMulti, boolean magic ) {
 		float acuStat = attacker.attackSkill( defender );
 		float defStat = defender.defenseSkill( attacker );
+		if (attacker instanceof Mob) acuStat *= MonsterStats.accuracyMultiplier((Mob) attacker);
+		if (defender instanceof Mob) defStat *= MonsterStats.defenseMultiplier((Mob) defender);
 
 		if (defender instanceof Hero && ((Hero) defender).damageInterrupt){
 			((Hero) defender).interrupt();
@@ -778,6 +784,7 @@ public abstract class Char extends Actor {
 		speed *= Swiftness.speedBoost(this, glyphLevel(Swiftness.class));
 		speed *= Flow.speedBoost(this, glyphLevel(Flow.class));
 		speed *= Bulk.speedBoost(this, glyphLevel(Bulk.class));
+		if (this instanceof Mob) speed *= MonsterStats.speedMultiplier((Mob) this);
 
 		return speed;
 	}
