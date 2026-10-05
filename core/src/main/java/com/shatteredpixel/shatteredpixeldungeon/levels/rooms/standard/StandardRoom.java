@@ -35,9 +35,11 @@ public abstract class StandardRoom extends Room {
 	
 	public enum SizeCategory {
 		
-		NORMAL(4, 10, 1),
-		LARGE(10, 14, 2),
-		GIANT(14, 18, 3);
+		// Larger room footprints expand the loop builder's room-center orbit as
+		// it places each room against the previous room's actual bounds.
+		NORMAL(5, 13, 1),
+		LARGE(13, 18, 2),
+		GIANT(18, 23, 3);
 		
 		public final int minDim, maxDim;
 		public final int roomValue;
