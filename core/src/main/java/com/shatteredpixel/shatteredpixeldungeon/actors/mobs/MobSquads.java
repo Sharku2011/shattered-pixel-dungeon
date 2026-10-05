@@ -87,6 +87,20 @@ public final class MobSquads {
 		mob.squadDisbanded = false;
 	}
 
+	/** Keeps a swarm's split clones in its existing squad, or starts a family squad if needed. */
+	public static void inheritSplitSquad(Mob parent, Mob clone) {
+		if (parent.squadId < 0) parent.squadId = parent.id();
+		parent.squadDisbanded = false;
+		clone.squadId = parent.squadId;
+		clone.squadDisbanded = false;
+		clone.squadRole = "solo";
+		clone.squadRoleSelectionPending = false;
+		if (!parent.countsTowardMobCap()) clone.setMobCapExempt();
+		for (Mob member : members(Dungeon.level, parent.squadId)) {
+			member.squadRoleSelectionPending = false;
+		}
+	}
+
 	/** Breaks up a squad when its selected tank/leader dies so survivors return to solo behavior. */
 	public static void leaderDied(Mob leader) {
 		if (leader == null || leader.squadId < 0 || !"tank".equals(leader.squadRole)) return;
@@ -94,6 +108,18 @@ public final class MobSquads {
 		int squadId = leader.squadId;
 		ArrayList<Mob> squad = members(Dungeon.level, squadId);
 		if (squad.size() < 2) return;
+		// A split swarm is one family even when the original member dies. Keep
+		// that family intact instead of disbanding it through normal leader rules.
+		for (Mob member : squad) {
+			if (member instanceof Swarm && ((Swarm) member).generation > 0) {
+				MonsterStats.assignRole(leader, "solo");
+				MonsterStats.assignRole(member, "tank");
+				logSpawn("swarm_leader_succeeded", "floor=" + Dungeon.depth + " squadId=" + squadId
+						+ " previous=" + leader.getClass().getSimpleName() + "#" + leader.id()
+						+ " successor=" + member.getClass().getSimpleName() + "#" + member.id());
+				return;
+			}
+		}
 		Mob successor = null;
 		float bestToughness = Float.NEGATIVE_INFINITY;
 		for (Mob member : squad) {
@@ -136,6 +162,12 @@ public final class MobSquads {
 		if (level == null || level.mobs == null) return;
 		ArrayList<Mob> unassigned = new ArrayList<>();
 		Map<Integer, Integer> assignedCounts = new HashMap<>();
+		HashSet<Integer> splitSwarmSquads = new HashSet<>();
+		for (Mob mob : level.mobs) {
+			if (mob instanceof Swarm && ((Swarm) mob).generation > 0 && mob.squadId >= 0) {
+				splitSwarmSquads.add(mob.squadId);
+			}
+		}
 		for (Mob mob : level.mobs) {
 			if (mob != null) {
 				if (!isSquadEligible(mob)) {
@@ -143,7 +175,8 @@ public final class MobSquads {
 				} else if (mob.squadDisbanded) {
 					mob.squadId = -1;
 				} else if (mob.squadId >= 0
-						&& assignedCounts.getOrDefault(mob.squadId, 0) < MAX_MEMBERS) {
+						&& (splitSwarmSquads.contains(mob.squadId)
+						|| assignedCounts.getOrDefault(mob.squadId, 0) < MAX_MEMBERS)) {
 					assignedCounts.put(mob.squadId, assignedCounts.getOrDefault(mob.squadId, 0) + 1);
 				} else {
 					mob.squadId = -1;
@@ -210,6 +243,13 @@ public final class MobSquads {
 	private static void assignRoles(ArrayList<Mob> squad) {
 		if (squad.isEmpty()) return;
 		for (Mob member : squad) MonsterStats.migrateLoadedHP(member);
+			boolean splitSwarmFamily = false;
+			for (Mob member : squad) {
+				if (member instanceof Swarm && ((Swarm) member).generation > 0) {
+					splitSwarmFamily = true;
+					break;
+				}
+			}
 			if (squad.size() < 2) {
 				MonsterStats.assignRole(squad.get(0), "solo");
 				squad.get(0).squadRoleSelectionPending = false;
@@ -269,7 +309,9 @@ public final class MobSquads {
 					usedRoles.add(role);
 				}
 			}
-			if (!hasAssignedRole || needsRoleSelection(squad)) {
+			if (splitSwarmFamily) {
+				for (Mob member : squad) member.squadRoleSelectionPending = false;
+			} else if (!hasAssignedRole || needsRoleSelection(squad)) {
 				for (Mob member : squad) member.squadRoleSelectionPending = true;
 			}
 	}
