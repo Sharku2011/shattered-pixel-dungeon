@@ -524,7 +524,7 @@ public abstract class YogFist extends Mob {
 			Char enemy = this.enemy;
 			if (hit( this, enemy, true )) {
 
-				enemy.damage( Random.NormalIntRange(10, 20), new LightBeam() );
+				enemy.damage( MonsterStats.scaleDamage(this, Random.NormalIntRange(10, 20)), new LightBeam() );
 				Buff.prolong( enemy, Blindness.class, Blindness.DURATION/2f );
 
 				if (!enemy.isAlive() && enemy == Dungeon.hero) {
@@ -590,7 +590,7 @@ public abstract class YogFist extends Mob {
 			Char enemy = this.enemy;
 			if (hit( this, enemy, true )) {
 
-				enemy.damage( Random.NormalIntRange(10, 20), new DarkBolt() );
+				enemy.damage( MonsterStats.scaleDamage(this, Random.NormalIntRange(10, 20)), new DarkBolt() );
 
 				Light l = enemy.buff(Light.class);
 				if (l != null){

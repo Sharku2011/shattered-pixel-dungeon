@@ -117,7 +117,7 @@ public class Warlock extends Mob {
 			int dmg = Random.NormalIntRange( 12, 18 );
 			dmg = Math.round(dmg * AscensionChallenge.statModifier(this));
 
-			enemy.damage( dmg, new DarkBolt() );
+			enemy.damage( MonsterStats.scaleDamage(this, dmg), new DarkBolt() );
 			
 			if (enemy == Dungeon.hero && !enemy.isAlive()) {
 				Badges.validateDeathFromEnemyMagic();

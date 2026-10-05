@@ -29,6 +29,7 @@ import com.shatteredpixel.shatteredpixeldungeon.Statistics;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Actor;
 import com.shatteredpixel.shatteredpixeldungeon.actors.Char;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.DM100;
+import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.MonsterStats;
 import com.shatteredpixel.shatteredpixeldungeon.effects.Lightning;
 import com.shatteredpixel.shatteredpixeldungeon.effects.particles.SparkParticle;
 import com.shatteredpixel.shatteredpixeldungeon.journal.Bestiary;
@@ -122,9 +123,9 @@ public class VaultSentry extends NPC {
 									&& ch.alignment == Alignment.ALLY
 									&& ch.invisible == 0) {
 								if (recentZaps.contains(ch.id())) {
-									ch.damage(Random.NormalIntRange(3, 6), new DM100.LightningBolt());
+									ch.damage(MonsterStats.scaleDamage(this, Random.NormalIntRange(3, 6)), new DM100.LightningBolt());
 								} else {
-									ch.damage(Random.NormalIntRange(6, 12), new DM100.LightningBolt());
+									ch.damage(MonsterStats.scaleDamage(this, Random.NormalIntRange(6, 12)), new DM100.LightningBolt());
 								}
 								curZaps.add(ch.id());
 								if (ch.sprite.visible || sprite.visible) {

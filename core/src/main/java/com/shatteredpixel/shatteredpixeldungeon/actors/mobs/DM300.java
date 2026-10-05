@@ -690,9 +690,9 @@ public class DM300 extends Mob {
 		public void affectChar(Char ch) {
 			if (!(ch instanceof DM300 || ch instanceof Pylon)){
 				if (Dungeon.isChallenged(Challenges.STRONGER_BOSSES)) {
-					ch.damage(Random.NormalIntRange(10, 20), this);
+					ch.damage(MonsterStats.scaleDamage((DM300)target, Random.NormalIntRange(10, 20)), this);
 				} else {
-					ch.damage(Random.NormalIntRange(6, 12), this);
+					ch.damage(MonsterStats.scaleDamage((DM300)target, Random.NormalIntRange(6, 12)), this);
 				}
 				if (ch.isAlive()) {
 					Buff.prolong(ch, Paralysis.class, Dungeon.isChallenged(Challenges.STRONGER_BOSSES) ? 5 : 3);

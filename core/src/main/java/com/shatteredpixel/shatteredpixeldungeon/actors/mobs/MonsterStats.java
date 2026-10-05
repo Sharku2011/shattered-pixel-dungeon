@@ -246,6 +246,9 @@ public final class MonsterStats {
 	public static float damageMultiplier(Mob mob) {
 		return mob.spawnDamageMultiplier;
 	}
+	public static int scaleDamage(Mob mob, int damage) {
+		return damage <= 0 ? damage : Math.round(damage * damageMultiplier(mob));
+	}
 	public static float accuracyMultiplier(Mob mob) {
 		return mob.spawnAccuracyMultiplier;
 	}

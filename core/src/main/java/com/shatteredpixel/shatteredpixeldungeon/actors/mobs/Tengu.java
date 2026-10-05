@@ -636,7 +636,7 @@ public class Tengu extends Mob {
 							dmg -= ch.drRoll();
 
 							if (dmg > 0) {
-								ch.damage(dmg, Bomb.class);
+								ch.damage(MonsterStats.scaleDamage((Tengu)target, dmg), Bomb.class);
 							}
 
 							if (ch == Dungeon.hero){
@@ -1013,12 +1013,18 @@ public class Tengu extends Mob {
 		}
 		
 		private void spreadblob(){
-			GameScene.add(Blob.seed(shockerPos, 1, ShockerBlob.class));
+			seedShockerBlob(shockerPos, 1);
 			for (int i = shockingOrdinals ? 0 : 1; i < PathFinder.CIRCLE8.length; i += 2){
 				if (!Dungeon.level.solid[shockerPos+PathFinder.CIRCLE8[i]]) {
-					GameScene.add(Blob.seed(shockerPos + PathFinder.CIRCLE8[i], 2, ShockerBlob.class));
+					seedShockerBlob(shockerPos + PathFinder.CIRCLE8[i], 2);
 				}
 			}
+		}
+
+		private void seedShockerBlob(int cell, int amount){
+			ShockerBlob blob = (ShockerBlob) Blob.seed(cell, amount, ShockerBlob.class);
+			blob.damageMultiplier = MonsterStats.damageMultiplier((Tengu)target);
+			GameScene.add(blob);
 		}
 		
 		private static final String SHOCKER_POS = "shocker_pos";
@@ -1039,6 +1045,9 @@ public class Tengu extends Mob {
 		}
 		
 		public static class ShockerBlob extends Blob {
+
+			private static final String DAMAGE_MULTIPLIER = "damage_multiplier";
+			private float damageMultiplier = 1f;
 			
 			{
 				actPriority = BUFF_PRIO - 1;
@@ -1066,7 +1075,7 @@ public class Tengu extends Mob {
 							
 							Char ch = Actor.findChar(cell);
 							if (ch != null && !(ch instanceof Tengu)){
-								ch.damage(2 + Dungeon.scalingDepth(), new Electricity());
+								ch.damage(Math.round((2 + Dungeon.scalingDepth()) * damageMultiplier), new Electricity());
 								
 								if (ch == Dungeon.hero){
 									Statistics.qualifiedForBossChallengeBadge = false;
@@ -1096,6 +1105,18 @@ public class Tengu extends Mob {
 			@Override
 			public String tileDesc() {
 				return Messages.get(this, "desc");
+			}
+
+			@Override
+			public void storeInBundle(Bundle bundle) {
+				super.storeInBundle(bundle);
+				bundle.put(DAMAGE_MULTIPLIER, damageMultiplier);
+			}
+
+			@Override
+			public void restoreFromBundle(Bundle bundle) {
+				super.restoreFromBundle(bundle);
+				if (bundle.contains(DAMAGE_MULTIPLIER)) damageMultiplier = bundle.getFloat(DAMAGE_MULTIPLIER);
 			}
 		}
 		

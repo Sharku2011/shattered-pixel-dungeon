@@ -134,7 +134,7 @@ public class CrystalSpire extends Mob {
 					} else if (ch == Dungeon.hero){
 						Statistics.questScores[2] -= 100;
 					}
-					ch.damage(dmg, new SpireSpike());
+					ch.damage(MonsterStats.scaleDamage(this, dmg), new SpireSpike());
 
 					int movePos = i;
 					//crystal guardians get knocked away from the hero, others get knocked away from the spire
