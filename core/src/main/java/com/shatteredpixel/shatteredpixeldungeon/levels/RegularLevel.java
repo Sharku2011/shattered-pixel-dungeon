@@ -118,7 +118,15 @@ public abstract class RegularLevel extends Level {
 			rooms = builder.build((ArrayList<Room>)initRooms.clone());
 		} while (rooms == null);
 		
-		return painter().paint(this, rooms);
+		boolean painted = painter().paint(this, rooms);
+		if (painted) {
+			// Mobs placed while painting rooms are authored set pieces, not part of
+			// the roaming population budget filled by createMobs() and respawning.
+			for (Mob mob : mobs) {
+				if (mob.alignment == Char.Alignment.ENEMY) mob.setMobCapExempt();
+			}
+		}
+		return painted;
 		
 	}
 	
@@ -203,8 +211,8 @@ public abstract class RegularLevel extends Level {
 		return new float[]{1};
 	}
 	
-	@Override
-	public int mobLimit() {
+	/** Existing floor population budget before applying the larger tactical population cap. */
+	protected int baseMobLimit() {
 		if (Dungeon.depth <= 1){
 			if (!Statistics.amuletObtained) return 0;
 			else                            return 10;
@@ -222,11 +230,15 @@ public abstract class RegularLevel extends Level {
 	}
 
 	@Override
+	public int mobLimit() {
+		return baseMobLimit() * 3;
+	}
+
+	@Override
 	public int squadLimit() {
 		if (Dungeon.depth <= 1) return Dungeon.depth == 1 ? 8 : 0;
-		// Regular enemies spawn as pairs or trios, so this cap prevents the
-		// population from fragmenting into too many isolated groups.
-		return Math.max(1, (mobLimit() + 1) / 2);
+		// Preserve the former population cap as the maximum number of squads.
+		return baseMobLimit();
 	}
 	
 	@Override

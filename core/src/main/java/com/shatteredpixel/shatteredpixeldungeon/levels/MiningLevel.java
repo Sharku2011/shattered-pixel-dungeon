@@ -150,9 +150,9 @@ public class MiningLevel extends CavesLevel {
 	}
 
 	@Override
-	public int mobLimit() {
-		//1 fewer than usual
-		return super.mobLimit()-1;
+	protected int baseMobLimit() {
+		//1 fewer squad/population slot than a regular floor.
+		return Math.max(0, super.baseMobLimit()-1);
 	}
 
 	@Override

@@ -146,6 +146,8 @@ public abstract class Mob extends Char {
 	boolean initialLeaderBonusApplied;
 	/** Stable tactical role label; role labels no longer alter combat stats. */
 	String squadRole = "solo";
+	/** Room-authored set-piece enemies do not consume the ordinary floor population cap. */
+	private boolean mobCapExempt;
 	int monsterBalanceVersion = 2;
 	float spawnHpMultiplier = 1f;
 	float spawnDamageMultiplier = 1f;
@@ -179,6 +181,7 @@ public abstract class Mob extends Char {
 	private static final String SQUAD_DISBANDED = "squad_disbanded";
 	private static final String SQUAD_ROLE_PENDING = "squad_role_pending";
 	private static final String SQUAD_ROLE = "squad_role";
+	private static final String MOB_CAP_EXEMPT = "mob_cap_exempt";
 	private static final String MONSTER_BALANCE_VERSION = "monster_balance_version";
 	private static final String SPAWN_HP_MULTIPLIER = "spawn_hp_multiplier";
 	private static final String SPAWN_DAMAGE_MULTIPLIER = "spawn_damage_multiplier";
@@ -225,6 +228,7 @@ public abstract class Mob extends Char {
 		bundle.put( SQUAD_DISBANDED, squadDisbanded );
 		bundle.put( SQUAD_ROLE_PENDING, squadRoleSelectionPending );
 		bundle.put( SQUAD_ROLE, squadRole );
+		bundle.put( MOB_CAP_EXEMPT, mobCapExempt );
 		bundle.put( MONSTER_BALANCE_VERSION, monsterBalanceVersion );
 		bundle.put( SPAWN_HP_MULTIPLIER, spawnHpMultiplier );
 		bundle.put( SPAWN_DAMAGE_MULTIPLIER, spawnDamageMultiplier );
@@ -292,6 +296,7 @@ public abstract class Mob extends Char {
 		squadRoleSelectionPending = bundle.contains(SQUAD_ROLE_PENDING)
 				? bundle.getBoolean(SQUAD_ROLE_PENDING) : squadId >= 0;
 		squadRole = bundle.contains(SQUAD_ROLE) ? bundle.getString(SQUAD_ROLE) : "solo";
+		mobCapExempt = bundle.getBoolean(MOB_CAP_EXEMPT);
 		monsterBalanceVersion = bundle.contains(MONSTER_BALANCE_VERSION) ? bundle.getInt(MONSTER_BALANCE_VERSION) : 0;
 		spawnHpMultiplier = bundle.contains(SPAWN_HP_MULTIPLIER) ? bundle.getFloat(SPAWN_HP_MULTIPLIER) : 1f;
 		spawnDamageMultiplier = bundle.contains(SPAWN_DAMAGE_MULTIPLIER) ? bundle.getFloat(SPAWN_DAMAGE_MULTIPLIER) : 1f;
@@ -311,6 +316,15 @@ public abstract class Mob extends Char {
 
 		//no need to actually save this, must be false
 		firstAdded = false;
+	}
+
+	/** Marks an authored set-piece enemy as exempt from ordinary population limits. */
+	public void setMobCapExempt(){
+		mobCapExempt = true;
+	}
+
+	public boolean countsTowardMobCap(){
+		return !mobCapExempt;
 	}
 
 	//mobs need to remember their targets after every actor is added

@@ -480,11 +480,7 @@ public final class MobSquads {
 	}
 
 	private static boolean isSquadEligible(Mob mob) {
-		// Room-authored Piranhas and Golems are fixed set pieces, not roaming squads.
-		if (mob != null) {
-			String type = mob.getClass().getSimpleName();
-			if ("Piranha".equals(type) || "Golem".equals(type)) return false;
-		}
+		if (mob == null || !mob.countsTowardMobCap()) return false;
 		HashSet<Char.Property> properties = mob.properties();
 		return mob.alignment == Char.Alignment.ENEMY
 				&& !properties.contains(Char.Property.BOSS)

@@ -724,8 +724,9 @@ public abstract class Level implements Bundlable {
 
 	public int mobCount(){
 		float count = 0;
-		for (Mob mob : Dungeon.level.mobs.toArray(new Mob[0])){
-			if (mob.alignment == Char.Alignment.ENEMY && !mob.properties().contains(Char.Property.MINIBOSS)) {
+		for (Mob mob : mobs.toArray(new Mob[0])){
+			if (mob.countsTowardMobCap() && mob.alignment == Char.Alignment.ENEMY
+					&& !mob.properties().contains(Char.Property.MINIBOSS)) {
 				count += mob.spawningWeight();
 			}
 		}
@@ -736,7 +737,7 @@ public abstract class Level implements Bundlable {
 	public int mobPopulationCount(){
 		int count = 0;
 		for (Mob mob : mobs.toArray(new Mob[0])){
-			if (mob.alignment == Char.Alignment.ENEMY
+			if (mob.countsTowardMobCap() && mob.alignment == Char.Alignment.ENEMY
 					&& !mob.properties().contains(Char.Property.BOSS)
 					&& !mob.properties().contains(Char.Property.MINIBOSS)
 					&& !mob.properties().contains(Char.Property.IMMOVABLE)) count++;
