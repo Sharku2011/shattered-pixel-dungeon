@@ -70,19 +70,18 @@ public final class JevMobAI {
 	private JevMobAI() {}
 
 	static String tacticFor(Mob mob) {
-		if (mob.squadId < 0) return "advance";
+		if (mob.squadId < 0 || Dungeon.level == null) return "advance";
+		ArrayList<Mob> members = MobSquads.members(Dungeon.level, mob.squadId);
+		if (members.size() < 2) return "advance";
 		String key = apiKey();
-		if (Dungeon.level == null || Dungeon.hero == null || mob.state != mob.HUNTING) return "advance";
+		if (Dungeon.hero == null || mob.state != mob.HUNTING) return "advance";
 		if (cachedLevel != Dungeon.level || cachedDepth != Dungeon.depth) {
 			plans.clear();
 			cachedLevel = Dungeon.level;
 			cachedDepth = Dungeon.depth;
 		}
 
-		ArrayList<Mob> members = mob.squadId < 0
-				? new ArrayList<Mob>() : MobSquads.members(Dungeon.level, mob.squadId);
-		if (members.isEmpty()) members.add(mob);
-		int squadKey = mob.squadId < 0 ? mob.id() : mob.squadId;
+		int squadKey = mob.squadId;
 		String signature = composition(members);
 		String heroBand = healthBand(Dungeon.hero.HP, Dungeon.hero.HT);
 		Plan plan = plans.get(squadKey);
@@ -180,6 +179,7 @@ public final class JevMobAI {
 		requestedSquads.removeIf(squad -> {
 			ArrayList<Mob> members = MobSquads.members(level, squad);
 			if (members.isEmpty()) members.addAll(candidatesBySquad.get(squad));
+			if (members.size() < 2) return true;
 			Plan plan = plans.get(squad);
 			if (plan == null) {
 				plan = new Plan();
