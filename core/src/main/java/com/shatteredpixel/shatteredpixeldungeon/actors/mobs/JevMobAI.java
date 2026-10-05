@@ -253,8 +253,7 @@ public final class JevMobAI {
 				}
 				if (memberCanFlank) flankMembersWithCandidates++;
 			}
-			boolean flankAvailable = members.size() >= 2 && flankMembersWithCandidates >= 2
-					&& flankDirections.size() >= 2;
+			boolean flankAvailable = members.size() >= 2 && flankMembersWithCandidates >= 1;
 			ArrayList<String> flankApproachDirections = new ArrayList<>();
 			for (int direction = 0; direction < 8; direction++) {
 				if (flankDirections.contains(direction)) {
@@ -268,21 +267,22 @@ public final class JevMobAI {
 			squadState.put("escortGoalAvailable", hasEscortCandidates);
 			state.put("squad_" + squadId, squadState);
 			Map<String, Object> criteria = new LinkedHashMap<>();
-			criteria.put("advance", "Press the hero, close distance, and attack when legal.");
-			if (flankAvailable) criteria.put("flank", "Move as a squad to distinct open positions around the hero, then attack from multiple directions.");
+			criteria.put("advance", "Press the hero, close distance, and attack when legal. Use this when no other offered maneuver creates a useful advantage.");
+			if (flankAvailable) criteria.put("flank", "Send members with listed flank goals toward open positions around the hero; squadmates without a goal keep pressuring normally.");
 			if (hasEscortCandidates) criteria.put("escort_ranged", "The tank screens a ranged squadmate by moving between that ally and the hero; other tactical members create pressure around the hero.");
-			criteria.put("hold_range", "Ranged monsters preserve distance and attack when a legal shot is available; others advance as needed.");
+			if (hasRangedAlly) criteria.put("hold_range", "Ranged monsters preserve distance and attack when a legal shot is available; others advance as needed.");
 			Map<String, Object> question = new LinkedHashMap<>();
 			question.put("type", "choice");
-			question.put("instructions", "Choose one short combat maneuver for the whole squad, not an individual attack. "
+			question.put("instructions", "Choose the maneuver that gives this squad the clearest tactical advantage; do not select advance automatically when another offered maneuver is useful. "
+					+ "Choose one short combat maneuver for the whole squad, not an individual attack. "
 					+ "advance means close in and use each monster's normal legal attacks. "
-					+ "flank means send at least two members toward different compass sectors around the hero using their listed goal cells; "
-					+ "it is a coordinated approach, not a special attack, and members may need several local pathfinding turns to reach their goals. "
+					+ "flank means send members with listed goal cells toward open positions around the hero; other members pressure the hero normally. "
+					+ "It is a coordinated approach, not a special attack, and a flanker may need several local pathfinding turns to reach a goal. "
 					+ "escort_ranged means the tank moves between the hero and a ranged ally while other eligible members pressure from another angle. "
 					+ "hold_range means ranged members keep distance when they can shoot; melee members still approach. "
 					+ "Each member's observation map and visibleCharacters show only what that monster can currently see; '?' and unseen hero details are unknown. "
 					+ "enemyDistance and listed goal distance are Chebyshev grid distances (a diagonal step counts as one), not route lengths. "
-					+ "flankMembersWithReachableGoals and flankApproachDirections summarize legal, visible destinations; flank is offered only when at least two members can use different directions. "
+					+ "flankMembersWithReachableGoals and flankApproachDirections summarize legal, visible destinations; flank is offered when at least one member has a reachable flank goal. "
 					+ "Member balanceProfile multipliers are fixed at spawn; role labels do not change stats. "
 					+ "Use floor, visible terrain, squad roles and intelligence to choose. For flank or escort_ranged, coordinate with the separate destination questions. "
 					+ "The game validates goals, pathfinds locally, and uses normal combat after movement. Never choose a maneuver omitted from criteria.");
