@@ -23,6 +23,8 @@ package com.shatteredpixel.shatteredpixeldungeon.levels.builders;
 
 import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.Room;
 import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.connection.ConnectionRoom;
+import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.connection.DoubleTunnelRoom;
+import com.shatteredpixel.shatteredpixeldungeon.levels.rooms.standard.StandardRoom;
 import com.watabou.utils.PointF;
 import com.watabou.utils.Random;
 
@@ -88,7 +90,8 @@ public class LoopBuilder extends RegularBuilder {
 
 		ArrayList<Room> loop = new ArrayList<>();
 		float[] pathTunnels = pathTunnelChances.clone();
-		for (Room r : mainPathRooms){
+		for (int i = 0; i < mainPathRooms.size(); i++){
+			Room r = mainPathRooms.get(i);
 			loop.add(r);
 			
 			int tunnels = Random.chances(pathTunnels);
@@ -99,7 +102,17 @@ public class LoopBuilder extends RegularBuilder {
 			pathTunnels[tunnels]--;
 			
 			for (int j = 0; j < tunnels; j++){
-				loop.add(ConnectionRoom.createRoom());
+				boolean betweenStandardRooms = i + 1 < mainPathRooms.size()
+						&& r instanceof StandardRoom
+						&& !r.isEntrance() && !r.isExit()
+						&& mainPathRooms.get(i + 1) instanceof StandardRoom
+						&& !mainPathRooms.get(i + 1).isEntrance()
+						&& !mainPathRooms.get(i + 1).isExit();
+				if (tunnels == 1 && j == 0 && betweenStandardRooms && Random.Float() < 0.25f){
+					loop.add(new DoubleTunnelRoom());
+				} else {
+					loop.add(ConnectionRoom.createRoom());
+				}
 			}
 		}
 		
