@@ -172,6 +172,10 @@ public final class MobSquads {
 			if (mob != null) {
 				if (!isSquadEligible(mob)) {
 					mob.squadId = -1;
+					if (mob instanceof GnollExile) {
+						MonsterStats.assignRole(mob, "solo");
+						mob.squadRoleSelectionPending = false;
+					}
 				} else if (mob.squadDisbanded) {
 					mob.squadId = -1;
 				} else if (mob.squadId >= 0
@@ -522,7 +526,7 @@ public final class MobSquads {
 	}
 
 	private static boolean isSquadEligible(Mob mob) {
-		if (mob == null || !mob.countsTowardMobCap()) return false;
+		if (mob == null || mob instanceof GnollExile || !mob.countsTowardMobCap()) return false;
 		HashSet<Char.Property> properties = mob.properties();
 		return mob.alignment == Char.Alignment.ENEMY
 				&& !properties.contains(Char.Property.BOSS)
