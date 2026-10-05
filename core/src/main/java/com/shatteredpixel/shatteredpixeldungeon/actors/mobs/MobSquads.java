@@ -480,6 +480,11 @@ public final class MobSquads {
 		return squad.get(0);
 	}
 
+	static Mob leader(Level level, int squadId) {
+		ArrayList<Mob> squad = members(level, squadId);
+		return squad.isEmpty() ? null : leader(squad);
+	}
+
 	private static int nearestOpenFormationCell(Level level, Mob mob, Mob lead) {
 		int bestCell = -1;
 		int bestDistance = Integer.MAX_VALUE;

@@ -18,6 +18,7 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.Buff;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
 import com.shatteredpixel.shatteredpixeldungeon.levels.Level;
 import com.shatteredpixel.shatteredpixeldungeon.levels.Terrain;
+import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
 import com.watabou.utils.DeviceCompat;
 
 import java.io.BufferedReader;
@@ -381,6 +382,7 @@ public final class JevMobAI {
 			{
 				JsonValue answers = JSON_READER.parse(responseBody).get("answers");
 				if (answers == null) return;
+				Map<Integer, String> tacticAnnouncements = new LinkedHashMap<>();
 				for (Integer squadId : requestedSquads) {
 					JsonValue answer = answers.get("squad_" + squadId);
 					if (answer != null && answer.has("choice")) {
@@ -390,6 +392,7 @@ public final class JevMobAI {
 								|| "escort_ranged".equals(choice) || "hold_range".equals(choice)) {
 							if (confidence >= 0.45f) {
 								plans.get(squadId).tactic = choice;
+								tacticAnnouncements.put(squadId, choice);
 								log("decision", "squad=" + squadId + " tactic=" + choice + " confidence=" + confidence);
 							}
 							else log("rejected", "squad=" + squadId + " choice=" + choice + " confidence=" + confidence + " threshold=0.45");
@@ -410,6 +413,12 @@ public final class JevMobAI {
 						log("role_assignment", "squad=" + squadId + " roles=" + assignment + " confidence=" + confidence);
 					} else {
 						log("role_fallback", "squad=" + squadId + " choice=" + choice + " confidence=" + confidence);
+					}
+				}
+				for (Map.Entry<Integer, String> entry : tacticAnnouncements.entrySet()) {
+					Mob leader = MobSquads.leader(level, entry.getKey());
+					if (leader != null && leader.isAlive()) {
+						leader.yell(Messages.get(JevMobAI.class, "tactic_" + entry.getValue()));
 					}
 				}
 				for (Map.Entry<String, Map<String, SquadMovementPlanner.Candidate>> entry : destinationChoiceOptions.entrySet()) {
