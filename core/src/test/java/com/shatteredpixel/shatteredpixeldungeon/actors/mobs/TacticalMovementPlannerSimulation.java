@@ -78,6 +78,18 @@ public final class TacticalMovementPlannerSimulation {
 		weightedCostIsRespected();
 		boundsClampAtMapCorner();
 		costFieldAppliesSpecPenalties();
+		flankersAvoidAxisAndHeroRing();
+		flankPathsSeparateInOpenRoom();
+		sectorsAreNonFrontalAndDistinct();
+		corridorYieldsNoFlankAndDegrades();
+		escortScreensBetweenHeroAndAlly();
+		randomizedAssignmentsAreLegalAndDeterministic();
+		dijkstraRunsPerAssignmentAreBounded();
+		heroMoveKeepsSector();
+		nextStepFollowsGoalAndAvoidsOccupied();
+		largeMemberGoalsRespectOpenSpace();
+		singleSurvivorDegradesWithoutAssignments();
+		heroHiddenFromMemberGivesNoGoal();
 		System.out.println("Tactical movement simulations passed; assertions=" + assertions);
 	}
 
@@ -156,6 +168,287 @@ public final class TacticalMovementPlannerSimulation {
 		int[] s = SquadDijkstra.fromSource(f, mover.cell, b);
 		check(s[hero] == SquadDijkstra.UNREACHABLE && s[mover.cell] == 0 && s[map.cell(9, 9)] != SquadDijkstra.UNREACHABLE, "fromSource over cost field terminates, hero unreachable");
 		check(b.contains(hero, 17) && b.contains(mate.cell, 17) && b.contains(map.cell(9, 9), 17), "bounds cover hero, squad, extras");
+	}
+
+	private static void flankersAvoidAxisAndHeroRing() {
+		SquadTestMap map = new SquadTestMap(17, 17);
+		int hero = map.cell(8, 8);
+		SquadMovementPlanner.Member tank = member(1, map.cell(4, 8), true, false, "tank");
+		ArrayList<SquadMovementPlanner.Member> squad = squad(tank, member(2, map.cell(3, 8)), member(3, map.cell(2, 8)));
+		occupyAll(map, hero, squad);
+		SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign("flank", squad, hero, map);
+		check(plan.frontId == 1 && plan.axisFrom == tank.cell && plan.degradeReason == null, "tank is front and axis origin");
+		check(plan.byMember.size() == 2 && !plan.byMember.containsKey(1), "both flankers assigned, front has no goal");
+		SquadCostField.Penalties p = new SquadCostField.Penalties();
+		p.axisFrom = tank.cell;
+		SquadCostField axis = new SquadCostField(map, squad.get(1), squad, hero, p);
+		for (SquadMovementPlanner.Assignment a : plan.byMember.values()) {
+			check("flank".equals(a.maneuver) && !a.path.isEmpty() && a.path.get(a.path.size() - 1) == a.goal, "flank path ends at goal");
+			for (int i = 0; i < a.path.size() - 1; i++) {
+				int c = a.path.get(i);
+				check(SquadMovementPlanner.distance(c, hero, map.width) > 1, "path avoids hero ring before goal: " + pathString(map, a.path));
+				if (i >= 2) check(axis.axisDistance(c) > 1, "path leaves axis band within two steps: " + pathString(map, a.path));
+			}
+		}
+	}
+
+	private static void flankPathsSeparateInOpenRoom() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(7, 7);
+		ArrayList<SquadMovementPlanner.Member> squad = squad(member(1, map.cell(2, 7), true, false, "tank"),
+				member(2, map.cell(2, 6)), member(3, map.cell(2, 8)));
+		occupyAll(map, hero, squad);
+		SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign("flank", squad, hero, map);
+		check(plan.byMember.size() == 2, "two flankers assigned in open room");
+		HashSet<Integer> first = new HashSet<>(plan.byMember.get(2).path);
+		int shared = 0;
+		for (int c : plan.byMember.get(3).path) if (first.contains(c)) shared++;
+		check(shared <= 2, "flank paths share at most two cells: " + shared);
+		SquadTestMap corridor = corridor(13);
+		int cHero = corridor.cell(6, 6);
+		ArrayList<SquadMovementPlanner.Member> line = squad(member(1, corridor.cell(6, 3), true, false, "tank"),
+				member(2, corridor.cell(6, 2)), member(3, corridor.cell(6, 1)));
+		occupyAll(corridor, cHero, line);
+		check(SquadMovementPlanner.assign("flank", line, cHero, corridor).byMember.isEmpty(), "corridor assigns no flankers without failing");
+	}
+
+	private static void sectorsAreNonFrontalAndDistinct() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(7, 7);
+		ArrayList<SquadMovementPlanner.Member> squad = squad(member(1, map.cell(3, 7), true, false, "tank"),
+				member(2, map.cell(3, 4)), member(3, map.cell(3, 10)), member(4, map.cell(2, 7)));
+		occupyAll(map, hero, squad);
+		SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign("flank", squad, hero, map);
+		check(plan.byMember.size() == 3, "three flankers assigned in open room: " + plan.byMember.size());
+		checkSectors(map, plan, hero);
+		ArrayList<String> names = new ArrayList<>();
+		for (SquadMovementPlanner.Assignment a : plan.byMember.values()) names.add(SquadMovementPlanner.directionName(a.sector));
+		check(names.equals(SquadMovementPlanner.openSectors(squad, hero, map)), "openSectors lists assigned sector names");
+		check(SquadMovementPlanner.sectorDiff(0, 7) == 1 && SquadMovementPlanner.sectorDiff(2, 6) == 4
+				&& SquadMovementPlanner.sectorDiff(5, 1) == 4 && SquadMovementPlanner.sectorDiff(3, 3) == 0, "circular sector difference");
+	}
+
+	private static void corridorYieldsNoFlankAndDegrades() {
+		SquadTestMap map = corridor(13);
+		int hero = map.cell(6, 6);
+		ArrayList<SquadMovementPlanner.Member> squad = squad(member(1, map.cell(6, 3), true, false, "tank"),
+				member(2, map.cell(6, 2)), member(3, map.cell(6, 1)));
+		occupyAll(map, hero, squad);
+		SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign("flank", squad, hero, map);
+		check(plan.byMember.isEmpty() && "no_open_sector".equals(plan.degradeReason), "corridor degrades with no_open_sector");
+		check(SquadMovementPlanner.openSectors(squad, hero, map).isEmpty(), "corridor exposes no open sectors");
+	}
+
+	private static void escortScreensBetweenHeroAndAlly() {
+		SquadTestMap map = new SquadTestMap(15, 13);
+		int hero = map.cell(2, 6);
+		SquadMovementPlanner.Member tank = member(20, map.cell(4, 4), true, false, "tank");
+		SquadMovementPlanner.Member ranged = member(21, map.cell(10, 6), true, true, "dealer");
+		SquadMovementPlanner.Member support = member(22, map.cell(6, 9));
+		ArrayList<SquadMovementPlanner.Member> squad = squad(tank, ranged, support);
+		occupyAll(map, hero, squad);
+		SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign("escort_ranged", squad, hero, map);
+		SquadMovementPlanner.Assignment e = plan.byMember.get(20);
+		check(e != null && "escort".equals(e.maneuver) && e.allyCell == ranged.cell, "tank receives escort goal");
+		int dx = map.x(e.goal) - map.x(hero), dy = map.y(e.goal) - map.y(hero);
+		int ax = map.x(ranged.cell) - map.x(hero), ay = map.y(ranged.cell) - map.y(hero);
+		int dot = dx * ax + dy * ay, span = ax * ax + ay * ay;
+		check(dot > 0 && dot < span, "escort goal projects between hero and ally");
+		check(SquadMovementPlanner.distance(e.goal, hero, map.width) >= 2, "escort goal keeps distance from hero");
+		check(goalLegal(map, tank, e.goal, hero) && e.path.get(e.path.size() - 1) == e.goal, "escort goal legal and path ends there");
+		check(plan.axisFrom == e.goal && plan.degradeReason == null && !plan.byMember.containsKey(21), "escort goal becomes the axis, ally gets nothing");
+		check(SquadMovementPlanner.screenPositionAvailable(squad, hero, map), "screen position available");
+		checkSectors(map, plan, hero);
+		map.hide(ranged.cell);
+		SquadMovementPlanner.SquadPlan hidden = SquadMovementPlanner.assign("escort_ranged", squad, hero, map);
+		check("no_screen_position".equals(hidden.degradeReason) && !hidden.byMember.containsKey(20), "hidden ally degrades escort");
+		check(hidden.axisFrom == tank.cell && hidden.byMember.containsKey(22) && "flank".equals(hidden.byMember.get(22).maneuver),
+				"degraded escort continues with flank rules");
+		check(!SquadMovementPlanner.screenPositionAvailable(squad, hero, map), "no screen position when ally hidden");
+	}
+
+	private static void randomizedAssignmentsAreLegalAndDeterministic() {
+		Random random = new Random(0x5eed);
+		int usable = 0;
+		for (int trial = 0; trial < 500; trial++) {
+			SquadTestMap map = new SquadTestMap(17, 17);
+			int hero = map.cell(8, 8);
+			map.occupy(hero);
+			ArrayList<SquadMovementPlanner.Member> squad = new ArrayList<>();
+			Set<Integer> placements = new HashSet<>();
+			placements.add(hero);
+			for (int i = 0; i < 3; i++) {
+				int cell;
+				do {
+					cell = map.cell(2 + random.nextInt(13), 2 + random.nextInt(13));
+				} while (!placements.add(cell));
+				squad.add(member(100 + i, cell, true, i == 1, i == 0 ? "tank" : i == 1 ? "dealer" : "support"));
+				map.occupy(cell);
+			}
+			for (int y = 2; y < 15; y++) for (int x = 2; x < 15; x++) {
+				int cell = map.cell(x, y);
+				if (!placements.contains(cell) && random.nextFloat() < 0.18f) map.wall(x, y);
+			}
+			for (String tactic : new String[]{"flank", "escort_ranged"}) {
+				SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign(tactic, squad, hero, map);
+				SquadMovementPlanner.SquadPlan again = SquadMovementPlanner.assign(tactic, squad, hero, map);
+				check(plan.byMember.keySet().equals(again.byMember.keySet()) && plan.axisFrom == again.axisFrom
+						&& String.valueOf(plan.degradeReason).equals(String.valueOf(again.degradeReason)), "deterministic assignment");
+				for (SquadMovementPlanner.Assignment a : plan.byMember.values()) {
+					SquadMovementPlanner.Assignment b = again.byMember.get(a.memberId);
+					check(a.goal == b.goal && a.path.equals(b.path) && a.sector == b.sector, "deterministic goal and path");
+					SquadMovementPlanner.Member m = null;
+					for (SquadMovementPlanner.Member s : squad) if (s.id == a.memberId) m = s;
+					check(goalLegal(map, m, a.goal, hero), "random goal legal");
+					check(!a.path.isEmpty() && a.path.get(a.path.size() - 1) == a.goal, "random path ends at goal");
+					int prev = m.cell;
+					for (int c : a.path) {
+						check(map.passable(m, c) && SquadMovementPlanner.distance(prev, c, map.width) == 1, "random path passable and contiguous");
+						prev = c;
+					}
+				}
+				if (plan.byMember.isEmpty()) check(plan.degradeReason != null, "empty plan reports a degrade reason");
+				checkSectors(map, plan, hero);
+				if ("flank".equals(tactic) && !plan.byMember.isEmpty()) usable++;
+			}
+		}
+		System.out.println("randomized layouts with >=1 flank assignment: " + usable + "/500");
+		check(usable >= 400, "most randomized layouts should keep a flank assignment: " + usable);
+	}
+
+	private static void dijkstraRunsPerAssignmentAreBounded() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(7, 7);
+		ArrayList<SquadMovementPlanner.Member> squad = squad(member(1, map.cell(3, 7), true, false, "tank"),
+				member(2, map.cell(3, 4)), member(3, map.cell(3, 10)), member(4, map.cell(2, 7)),
+				member(5, map.cell(12, 7), true, true, "dealer"));
+		occupyAll(map, hero, squad);
+		int bound = 3 * 4 / 2 + 1;
+		SquadDijkstra.resetRunCount();
+		SquadMovementPlanner.SquadPlan flank = SquadMovementPlanner.assign("flank", squad, hero, map);
+		check(SquadDijkstra.runCount() > 0 && SquadDijkstra.runCount() <= bound, "flank dijkstra runs bounded: " + SquadDijkstra.runCount());
+		check(flank.byMember.size() == 3, "flank assigns three flankers");
+		SquadDijkstra.resetRunCount();
+		SquadMovementPlanner.SquadPlan escort = SquadMovementPlanner.assign("escort_ranged", squad, hero, map);
+		check(SquadDijkstra.runCount() <= bound, "escort dijkstra runs bounded: " + SquadDijkstra.runCount());
+		check(escort.byMember.containsKey(1) && "escort".equals(escort.byMember.get(1).maneuver), "escort assigned in bound test");
+	}
+
+	private static void heroMoveKeepsSector() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(7, 7);
+		ArrayList<SquadMovementPlanner.Member> squad = squad(member(1, map.cell(2, 7), true, false, "tank"),
+				member(2, map.cell(2, 5)), member(3, map.cell(2, 9)));
+		occupyAll(map, hero, squad);
+		SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign("flank", squad, hero, map);
+		SquadMovementPlanner.Assignment a = plan.byMember.get(2);
+		check(a != null, "member 2 assigned");
+		int sector = a.sector, oldGoal = a.goal;
+		map.occupied[hero] = false;
+		int moved = map.cell(7, 6);
+		map.occupy(moved);
+		check(SquadMovementPlanner.retarget(plan, squad.get(1), squad, moved, map), "retarget succeeds after hero step");
+		check(a.sector == sector && a.heroCell == moved && a.goal != oldGoal, "sector kept, goal and hero updated");
+		check(SquadMovementPlanner.distance(a.goal, moved, map.width) == 1
+				&& SquadMovementPlanner.directionBucket(a.goal, moved, map.width) == sector, "new goal on new ring in same sector");
+		check(a.path.get(a.path.size() - 1) == a.goal, "retarget path ends at new goal");
+		for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+			int c = map.cell(map.x(moved) + dx, map.y(moved) + dy);
+			if (c != moved && SquadMovementPlanner.directionBucket(c, moved, map.width) == sector) map.wall(map.x(c), map.y(c));
+		}
+		check(!SquadMovementPlanner.retarget(plan, squad.get(1), squad, moved, map), "retarget fails when sector ring is walled");
+	}
+
+	private static void nextStepFollowsGoalAndAvoidsOccupied() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(7, 7);
+		SquadMovementPlanner.Member mover = member(2, map.cell(2, 5));
+		ArrayList<SquadMovementPlanner.Member> squad = squad(member(1, map.cell(2, 7), true, false, "tank"), mover);
+		occupyAll(map, hero, squad);
+		SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign("flank", squad, hero, map);
+		SquadMovementPlanner.Assignment a = plan.byMember.get(2);
+		int step = SquadMovementPlanner.nextStep(plan, mover, squad, hero, map);
+		check(step >= 0 && SquadMovementPlanner.distance(step, mover.cell, map.width) == 1 && !map.occupied(step), "next step is a free neighbour");
+		SquadCostField.Penalties p = new SquadCostField.Penalties();
+		p.heroProximity = true; p.ownGoal = a.goal; p.axisFrom = plan.axisFrom; p.squadmateAdjacency = true;
+		SquadCostField f = new SquadCostField(map, mover, squad, hero, p);
+		int[] d = SquadDijkstra.toTarget(f, a.goal, f.bounds(a.goal));
+		check(d[step] < d[mover.cell], "next step lowers remaining cost");
+		check(a.path.get(0) == step && a.path.get(a.path.size() - 1) == a.goal, "path refreshed from step to goal");
+		map.occupy(step);
+		int other = SquadMovementPlanner.nextStep(plan, mover, squad, hero, map);
+		check(other != step && (other == -1 || (SquadMovementPlanner.distance(other, mover.cell, map.width) == 1 && !map.occupied(other))),
+				"occupied step is replaced by another free neighbour or none");
+	}
+
+	private static void largeMemberGoalsRespectOpenSpace() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(7, 7);
+		SquadMovementPlanner.Member big = member(2, map.cell(2, 5));
+		ArrayList<SquadMovementPlanner.Member> squad = squad(member(1, map.cell(2, 7), true, false, "tank"), big, member(3, map.cell(2, 9)));
+		occupyAll(map, hero, squad);
+		map.large.add(2);
+		for (int y = 1; y <= 8; y++) map.openSpace[map.cell(8, y)] = false;
+		map.openSpace[map.cell(5, 4)] = map.openSpace[map.cell(5, 5)] = map.openSpace[map.cell(7, 6)] = false;
+		SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign("flank", squad, hero, map);
+		SquadMovementPlanner.Assignment a = plan.byMember.get(2);
+		check(a != null && map.openSpace[a.goal], "large member goal in open space");
+		for (int c : a.path) check(map.openSpace[c], "large member path stays in open space");
+	}
+
+	private static void singleSurvivorDegradesWithoutAssignments() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(7, 7);
+		ArrayList<SquadMovementPlanner.Member> squad = squad(member(1, map.cell(3, 7)));
+		occupyAll(map, hero, squad);
+		SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign("flank", squad, hero, map);
+		check(plan.byMember.isEmpty() && "no_open_sector".equals(plan.degradeReason) && plan.frontId == 1, "single survivor degrades");
+		check(SquadMovementPlanner.nextStep(plan, member(9, map.cell(5, 5)), squad, hero, map) == -1, "unknown member gets no step");
+		check(SquadMovementPlanner.nextStep(plan, squad.get(0), squad, hero, map) == -1, "unassigned member gets no step");
+	}
+
+	private static void heroHiddenFromMemberGivesNoGoal() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(7, 7);
+		ArrayList<SquadMovementPlanner.Member> squad = squad(member(1, map.cell(2, 7), true, false, "tank"),
+				member(2, map.cell(2, 5)), member(3, map.cell(2, 9)));
+		occupyAll(map, hero, squad);
+		map.hide(hero);
+		SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign("flank", squad, hero, map);
+		check(plan.byMember.isEmpty() && "no_open_sector".equals(plan.degradeReason), "hidden hero yields no goals");
+	}
+
+	private static void checkSectors(SquadTestMap map, SquadMovementPlanner.SquadPlan plan, int hero) {
+		Set<Integer> sectors = new HashSet<>();
+		int front = SquadMovementPlanner.directionBucket(plan.axisFrom, hero, map.width);
+		for (SquadMovementPlanner.Assignment a : plan.byMember.values()) {
+			if (!"flank".equals(a.maneuver)) continue;
+			check(SquadMovementPlanner.distance(a.goal, hero, map.width) == 1, "flank goal on hero ring");
+			check(a.sector == SquadMovementPlanner.directionBucket(a.goal, hero, map.width), "sector matches goal");
+			check(SquadMovementPlanner.sectorDiff(a.sector, front) >= 2, "flank sector not frontal");
+			check(sectors.add(a.sector), "flank sectors distinct");
+		}
+	}
+
+	private static boolean goalLegal(SquadTestMap map, SquadMovementPlanner.Member m, int c, int hero) {
+		return map.passable(m, c) && !map.occupied(c) && map.visible(m, c) && map.visible(m, hero);
+	}
+
+	private static SquadTestMap corridor(int size) {
+		SquadTestMap map = new SquadTestMap(size, size);
+		for (int y = 1; y < size - 1; y++) for (int x = 1; x < size - 1; x++) if (x != size / 2) map.wall(x, y);
+		return map;
+	}
+
+	private static void occupyAll(SquadTestMap map, int hero, ArrayList<SquadMovementPlanner.Member> squad) {
+		map.occupy(hero);
+		for (SquadMovementPlanner.Member m : squad) map.occupy(m.cell);
+	}
+
+	private static String pathString(SquadTestMap map, ArrayList<Integer> path) {
+		StringBuilder s = new StringBuilder();
+		for (int c : path) s.append('(').append(map.x(c)).append(',').append(map.y(c)).append(')');
+		return s.toString();
 	}
 
 	private static SquadMovementPlanner.Member member(int id, int cell) {
