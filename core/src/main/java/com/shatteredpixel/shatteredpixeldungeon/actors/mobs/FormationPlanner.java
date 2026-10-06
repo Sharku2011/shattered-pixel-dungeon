@@ -13,6 +13,8 @@ final class FormationPlanner {
 	static final class State {
 		String phase = "gather";      // "gather" | "advance" | "contact" | "released"
 		int anchorId = -1, gatherTurns, stallTurns, bestProgress = SquadDijkstra.UNREACHABLE;
+		/** Stall progress is lexicographic (sum of heroMap, sum of Euclidean^2 to the hero) over participants. */
+		long bestHeroSum = Long.MAX_VALUE, bestEuclidSum = Long.MAX_VALUE;
 		String releaseReason;         // "gather_timeout" | "stalled"
 	}
 
@@ -98,8 +100,15 @@ final class FormationPlanner {
 			} else {
 				hero = heroMap(ps, heroCell, world);
 				int progress = SquadDijkstra.UNREACHABLE;
-				for (Member p : ps) progress = Math.min(progress, hero[p.cell]);
-				if (progress < s.bestProgress) {
+				long heroSum = 0, euclidSum = 0;
+				for (Member p : ps) {
+					progress = Math.min(progress, hero[p.cell]);
+					heroSum += hero[p.cell];
+					euclidSum += euclid2(p.cell, heroCell, w);
+				}
+				if (heroSum < s.bestHeroSum || (heroSum == s.bestHeroSum && euclidSum < s.bestEuclidSum)) {
+					s.bestHeroSum = heroSum;
+					s.bestEuclidSum = euclidSum;
 					s.bestProgress = progress;
 					s.stallTurns = 0;
 				} else if (++s.stallTurns >= STALL_LIMIT) return release(s, "stalled");
@@ -115,14 +124,28 @@ final class FormationPlanner {
 			return best;
 		}
 		if (hero == null) hero = heroMap(ps, heroCell, world);
-		int others = SquadDijkstra.UNREACHABLE;
-		for (Member p : ps) if (p.id != mover.id) others = Math.min(others, hero[p.cell]);
-		int best = -1;
+		int others = Integer.MAX_VALUE, here = hero[mover.cell], hereE = euclid2(mover.cell, heroCell, w);
+		for (Member p : ps) if (p.id != mover.id) others = Math.min(others, SquadMovementPlanner.distance(p.cell, heroCell, w));
+		int closer = -1, slide = -1;
 		for (int n : neighbours(mover.cell, world)) {
-			if (hero[n] >= hero[mover.cell] || !world.passable(mover, n) || world.occupied(n) || !connected(ps, mover.id, n, w)) continue;
-			if (best < 0 || hero[n] < hero[best] || (hero[n] == hero[best] && hero[n] == others && hero[best] != others)) best = n;
+			if (hero[n] == SquadDijkstra.UNREACHABLE || !world.passable(mover, n) || world.occupied(n) || !connected(ps, mover.id, n, w)) continue;
+			int e = euclid2(n, heroCell, w);
+			if (hero[n] < here) {
+				if (closer < 0 || hero[n] < hero[closer]) { closer = n; continue; }
+				if (hero[n] > hero[closer]) continue;
+				boolean side = SquadMovementPlanner.distance(n, heroCell, w) == others;
+				boolean closerSide = SquadMovementPlanner.distance(closer, heroCell, w) == others;
+				if (side != closerSide) { if (side) closer = n; continue; }
+				if (e < euclid2(closer, heroCell, w)) closer = n;
+			} else if (hero[n] == here && e < hereE && (slide < 0 || e < euclid2(slide, heroCell, w))) slide = n;
 		}
-		return best < 0 ? mover.cell : best;
+		// Neighbours are scanned in ascending cell order, so every remaining tie keeps the lower cell index.
+		return closer >= 0 ? closer : slide >= 0 ? slide : mover.cell;
+	}
+
+	private static int euclid2(int a, int b, int w) {
+		int dx = a % w - b % w, dy = a / w - b / w;
+		return dx * dx + dy * dy;
 	}
 
 	private static int release(State s, String reason) {

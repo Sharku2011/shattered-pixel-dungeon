@@ -101,6 +101,7 @@ public final class TacticalMovementPlannerSimulation {
 		gatherTimeoutReleases();
 		immobileAnchorReleasesAfterStall();
 		degradeMatrixNeverThrows();
+		diagonalChainReachesContact();
 		formationStaysConnectedUntilContact();
 		System.out.println("Tactical movement simulations passed; assertions=" + assertions);
 	}
@@ -532,6 +533,26 @@ public final class TacticalMovementPlannerSimulation {
 	// ---- formation (spec 7, 10-6, 10-9) ----
 
 	private static void formationStaysConnectedUntilContact() {
+		int walled = formationContacts(0.12, "walled");
+		int open = formationContacts(0.0, "no walls");
+		// Controller ruling R12: the plan's 150/200 estimate was not met (measured 132 walled, 200 open), so the
+		// walled floor is floor(0.9 * 132) = 118 and open rooms must stay >= 190.
+		check(walled >= 118, "most random walled formations reach contact: " + walled);
+		check(open >= 190, "nearly all open-room formations reach contact: " + open);
+	}
+
+	private static void diagonalChainReachesContact() {
+		SquadTestMap map = new SquadTestMap(13, 13);
+		int hero = map.cell(2, 2);
+		ArrayList<Member> squad = squad(fm(1, map.cell(7, 7), 1f), fm(2, map.cell(8, 8), 1f), fm(3, map.cell(9, 9), 1f));
+		occupyAll(map, hero, squad);
+		FormationPlanner.State st = new FormationPlanner.State();
+		String phase = runFormation(map, squad, hero, st, 30, null);
+		check("contact".equals(phase), "diagonal chain reaches contact within 30 actions: " + phase + " " + st.releaseReason);
+	}
+
+	/** 200 seeded random runs (17x17, given wall density); returns how many reach contact. */
+	private static int formationContacts(double wallRate, String label) {
 		Random rng = new Random(20261007L);
 		int contact = 0, released = 0;
 		for (int run = 0; run < 200; run++) {
@@ -540,7 +561,7 @@ public final class TacticalMovementPlannerSimulation {
 			int hero = -1;
 			while (squad == null) {
 				map = new SquadTestMap(17, 17);
-				for (int y = 1; y < 16; y++) for (int x = 1; x < 16; x++) if (rng.nextDouble() < 0.12) map.wall(x, y);
+				for (int y = 1; y < 16; y++) for (int x = 1; x < 16; x++) if (rng.nextDouble() < wallRate) map.wall(x, y);
 				hero = map.cell(1 + rng.nextInt(15), 1 + rng.nextInt(15));
 				if (map.walkable[hero]) squad = randomFormation(rng, map, hero);
 			}
@@ -550,8 +571,8 @@ public final class TacticalMovementPlannerSimulation {
 			if ("contact".equals(phase)) contact++;
 			else if ("released".equals(phase)) released++;
 		}
-		System.out.println("formation random runs: contact=" + contact + " released=" + released + " of 200");
-		check(contact >= 150, "most random formations reach contact: " + contact);
+		System.out.println("formation random runs (" + label + "): contact=" + contact + " released=" + released + " of 200");
+		return contact;
 	}
 
 	/** 3-4 connected melee participants at least 3 from the hero, all able to reach it; null when placement fails. */
