@@ -927,7 +927,7 @@ public class VaultBossElemental extends Mob {
 					CellEmitter.get(cell).burst(MagicMissile.WhiteParticle.FACTORY, 10);
 					Char ch = Actor.findChar(cell);
 					if (ch != null && !(ch instanceof VaultBossElemental) && ch.buff(FrostResist.class) == null){
-						ch.damage(MonsterStats.scaleDamage(this, Random.NormalIntRange(10, 15)), new Frost());
+						ch.damage(MonsterStats.scaleDamage((Mob) target, Random.NormalIntRange(10, 15)), new Frost());
 						Buff.affect(ch, Frost.class, 5f);
 						Buff.affect(ch, FrostResist.class);
 						if (ch == Dungeon.hero){
@@ -1423,7 +1423,7 @@ public class VaultBossElemental extends Mob {
 		}
 
 		private void shockChar(Char ch){
-			ch.damage(MonsterStats.scaleDamage(this, Random.NormalIntRange(10, 15)), new Electricity());
+			ch.damage(MonsterStats.scaleDamage((Mob) target, Random.NormalIntRange(10, 15)), new Electricity());
 			Buff.prolong(ch, Paralysis.class, 1f);
 			Buff.affect(ch, ShockResist.class);
 			ch.sprite.centerEmitter().burst(SparkParticle.FACTORY, 3);
