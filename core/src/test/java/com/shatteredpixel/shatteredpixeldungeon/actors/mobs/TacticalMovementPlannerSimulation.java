@@ -10,6 +10,8 @@ import java.util.Random;
 import java.util.Set;
 import java.util.function.IntUnaryOperator;
 
+import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.SquadMovementPlanner.Member;
+
 /** Standalone deterministic movement simulations; run with scripts/simulate_tactical_movement.ps1. */
 public final class TacticalMovementPlannerSimulation {
 	private static int assertions;
@@ -94,6 +96,12 @@ public final class TacticalMovementPlannerSimulation {
 		nextStepSkipsPenalizedMinDistanceNeighbour();
 		nextStepAxisFollowsMovedFront();
 		failedEscortReassignResetsAxis();
+		fastMemberNeverLeadsByMoreThanOne();
+		gatherThenAdvance();
+		gatherTimeoutReleases();
+		immobileAnchorReleasesAfterStall();
+		degradeMatrixNeverThrows();
+		formationStaysConnectedUntilContact();
 		System.out.println("Tactical movement simulations passed; assertions=" + assertions);
 	}
 
@@ -519,6 +527,215 @@ public final class TacticalMovementPlannerSimulation {
 		map.hide(ranged.cell);
 		check(!SquadMovementPlanner.reassign(plan, tank, squad, hero, map), "escort reassign fails without visible ally");
 		check(!plan.byMember.containsKey(20) && plan.axisFrom == tank.cell, "failed escort reassign resets axis to front cell");
+	}
+
+	// ---- formation (spec 7, 10-6, 10-9) ----
+
+	private static void formationStaysConnectedUntilContact() {
+		Random rng = new Random(20261007L);
+		int contact = 0, released = 0;
+		for (int run = 0; run < 200; run++) {
+			SquadTestMap map = null;
+			ArrayList<Member> squad = null;
+			int hero = -1;
+			while (squad == null) {
+				map = new SquadTestMap(17, 17);
+				for (int y = 1; y < 16; y++) for (int x = 1; x < 16; x++) if (rng.nextDouble() < 0.12) map.wall(x, y);
+				hero = map.cell(1 + rng.nextInt(15), 1 + rng.nextInt(15));
+				if (map.walkable[hero]) squad = randomFormation(rng, map, hero);
+			}
+			occupyAll(map, hero, squad);
+			FormationPlanner.State st = new FormationPlanner.State();
+			String phase = runFormation(map, squad, hero, st, 400, null);
+			if ("contact".equals(phase)) contact++;
+			else if ("released".equals(phase)) released++;
+		}
+		System.out.println("formation random runs: contact=" + contact + " released=" + released + " of 200");
+		check(contact >= 150, "most random formations reach contact: " + contact);
+	}
+
+	/** 3-4 connected melee participants at least 3 from the hero, all able to reach it; null when placement fails. */
+	private static ArrayList<Member> randomFormation(Random rng, SquadTestMap map, int hero) {
+		int n = 3 + rng.nextInt(2);
+		ArrayList<Integer> cells = new ArrayList<>();
+		for (int tries = 0; tries < 200 && cells.size() < n; tries++) {
+			int c;
+			if (cells.isEmpty()) c = map.cell(1 + rng.nextInt(15), 1 + rng.nextInt(15));
+			else {
+				int base = cells.get(rng.nextInt(cells.size()));
+				c = map.cell(map.x(base) + rng.nextInt(3) - 1, map.y(base) + rng.nextInt(3) - 1);
+			}
+			if (map.walkable[c] && !cells.contains(c) && SquadMovementPlanner.distance(c, hero, map.width) >= 3) cells.add(c);
+		}
+		if (cells.size() < n) return null;
+		float[] speeds = {0.5f, 1f, 2f};
+		ArrayList<Member> squad = new ArrayList<>();
+		for (int i = 0; i < n; i++) squad.add(new Member(i + 1, cells.get(i), true, false, "melee", speeds[rng.nextInt(3)]));
+		int[] h = FormationPlanner.heroMap(squad, hero, map);
+		for (Member m : squad) if (h[m.cell] == SquadDijkstra.UNREACHABLE) return null;
+		return squad;
+	}
+
+	/**
+	 * Runs formation steps on the speed schedule (each member acts every 1/speed, ties by id) until the planner
+	 * first returns RELEASED; checks move legality and connectivity on the way. Returns the phase at release.
+	 */
+	private static String runFormation(SquadTestMap map, ArrayList<Member> squad, int hero, FormationPlanner.State st,
+			int maxActions, Runnable afterEach) {
+		HashMap<Integer, Double> clock = new HashMap<>();
+		for (Member m : squad) clock.put(m.id, 1.0 / m.speed);
+		for (int action = 0; action < maxActions; action++) {
+			Member mover = null;
+			for (Member m : squad) {
+				double t = clock.get(m.id);
+				if (mover == null || t < clock.get(mover.id) || (t == clock.get(mover.id) && m.id < mover.id)) mover = m;
+			}
+			clock.put(mover.id, clock.get(mover.id) + 1.0 / mover.speed);
+			int to = FormationPlanner.step(st, mover, squad, hero, map);
+			if (to == FormationPlanner.RELEASED) {
+				check("contact".equals(st.phase) || "released".equals(st.phase), "first RELEASED comes with contact/released: " + st.phase);
+				return st.phase;
+			}
+			if (to != mover.cell) {
+				check(SquadMovementPlanner.distance(to, mover.cell, map.width) == 1 && map.passable(mover, to) && !map.occupied(to),
+						"formation step is a free adjacent passable cell");
+				moveMember(map, squad, mover.id, to);
+			}
+			if ("gather".equals(st.phase) || "advance".equals(st.phase))
+				check(FormationPlanner.connected(FormationPlanner.participants(squad), -1, -1, map.width), "formation stays connected");
+			if (afterEach != null) afterEach.run();
+		}
+		return "timeout";
+	}
+
+	private static void moveMember(SquadTestMap map, ArrayList<Member> squad, int id, int to) {
+		for (int i = 0; i < squad.size(); i++) {
+			Member m = squad.get(i);
+			if (m.id != id) continue;
+			map.occupied[m.cell] = false;
+			map.occupied[to] = true;
+			squad.set(i, new Member(m.id, to, m.tactical, m.ranged, m.role, m.speed));
+		}
+	}
+
+	private static Member fm(int id, int cell, float speed) {
+		return new Member(id, cell, true, false, "melee", speed);
+	}
+
+	private static void fastMemberNeverLeadsByMoreThanOne() {
+		final SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(12, 7);
+		final ArrayList<Member> squad = squad(fm(1, map.cell(2, 7), 0.5f), fm(2, map.cell(2, 8), 2f));
+		occupyAll(map, hero, squad);
+		final FormationPlanner.State st = new FormationPlanner.State();
+		final int[] advanceChecks = {0};
+		runFormation(map, squad, hero, st, 200, () -> {
+			if (!"advance".equals(st.phase)) return;
+			advanceChecks[0]++;
+			check(SquadMovementPlanner.distance(squad.get(0).cell, squad.get(1).cell, map.width) <= 1, "fast member stays within 1 of slow member");
+		});
+		check(advanceChecks[0] > 10, "slow+fast pair exercised advance: checks=" + advanceChecks[0]);
+		check(st.anchorId == 1, "slowest member is the anchor");
+	}
+
+	private static void gatherThenAdvance() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(12, 12);
+		ArrayList<Member> squad = squad(fm(1, map.cell(2, 7), 0.5f), fm(2, map.cell(7, 7), 1f));
+		occupyAll(map, hero, squad);
+		FormationPlanner.State st = new FormationPlanner.State();
+		check(FormationPlanner.step(st, squad.get(0), squad, hero, map) == squad.get(0).cell && "gather".equals(st.phase), "anchor waits while gathering");
+		for (int i = 0; i < 6 && !"advance".equals(st.phase); i++) {
+			Member other = squad.get(1), anchor = squad.get(0);
+			int before = SquadMovementPlanner.distance(other.cell, anchor.cell, map.width);
+			int to = FormationPlanner.step(st, other, squad, hero, map);
+			check(to != FormationPlanner.RELEASED && SquadMovementPlanner.distance(to, anchor.cell, map.width) < before, "non-anchor moves toward anchor");
+			moveMember(map, squad, other.id, to);
+			if (!"advance".equals(st.phase))
+				check(FormationPlanner.step(st, anchor, squad, hero, map) == anchor.cell && "gather".equals(st.phase), "anchor keeps waiting");
+		}
+		check("advance".equals(st.phase) && FormationPlanner.connected(squad, -1, -1, map.width), "phase advance once connected");
+		check(st.anchorId == 1, "anchor is slowest member");
+	}
+
+	private static void gatherTimeoutReleases() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		for (int y = 1; y < 14; y++) map.wall(7, y);
+		int hero = map.cell(12, 12);
+		ArrayList<Member> squad = squad(fm(1, map.cell(3, 7), 1f), fm(2, map.cell(10, 7), 1f));
+		occupyAll(map, hero, squad);
+		FormationPlanner.State st = new FormationPlanner.State();
+		for (int turn = 1; turn <= 4; turn++) {
+			check(FormationPlanner.step(st, squad.get(1), squad, hero, map) == squad.get(1).cell, "cut-off member waits");
+			check(FormationPlanner.step(st, squad.get(0), squad, hero, map) == squad.get(0).cell, "anchor waits on gather turn " + turn);
+		}
+		check(FormationPlanner.step(st, squad.get(0), squad, hero, map) == FormationPlanner.RELEASED
+				&& "released".equals(st.phase) && "gather_timeout".equals(st.releaseReason), "5th anchor gather turn releases");
+		check(FormationPlanner.step(st, squad.get(1), squad, hero, map) == FormationPlanner.RELEASED, "released stays released");
+	}
+
+	private static void immobileAnchorReleasesAfterStall() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(12, 7);
+		ArrayList<Member> squad = squad(fm(1, map.cell(4, 7), 0.5f), fm(2, map.cell(3, 7), 1f));
+		occupyAll(map, hero, squad);
+		for (int y = 5; y <= 9; y++) for (int x = 2; x <= 5; x++) if (!map.occupied(map.cell(x, y))) map.occupy(map.cell(x, y));
+		FormationPlanner.State st = new FormationPlanner.State();
+		Member anchor = squad.get(0);
+		check(FormationPlanner.step(st, anchor, squad, hero, map) == anchor.cell && "advance".equals(st.phase), "boxed anchor waits; best progress set");
+		for (int turn = 1; turn <= 2; turn++) {
+			check(FormationPlanner.step(st, squad.get(1), squad, hero, map) == squad.get(1).cell, "boxed follower waits");
+			check(FormationPlanner.step(st, anchor, squad, hero, map) == anchor.cell && st.stallTurns == turn, "stall turn " + turn);
+		}
+		check(FormationPlanner.step(st, anchor, squad, hero, map) == FormationPlanner.RELEASED
+				&& "released".equals(st.phase) && "stalled".equals(st.releaseReason), "3rd consecutive stall releases");
+	}
+
+	private static void degradeMatrixNeverThrows() {
+		String[] tactics = {"advance", "flank", "escort_ranged", "hold_range", "formation"};
+		String[] squads = {"melee_only", "melee_ranged", "single_ranged", "with_instinctive"};
+		String[] terrains = {"open", "corridor", "walled"};
+		for (String tactic : tactics) for (String kind : squads) for (String terrain : terrains) {
+			SquadTestMap map = terrain.equals("corridor") ? corridor(13) : new SquadTestMap(13, 13);
+			if (terrain.equals("walled")) for (int x = 1; x < 12; x++) map.wall(x, 6);
+			int hero = map.cell(6, 3);
+			ArrayList<Member> squad = new ArrayList<>();
+			if (kind.equals("single_ranged")) squad.add(new Member(1, map.cell(6, 9), true, true, "dealer"));
+			else {
+				squad.add(new Member(1, map.cell(6, 8), true, false, "tank"));
+				squad.add(new Member(2, map.cell(6, 9), true, false, "melee", 2f));
+				if (kind.equals("melee_ranged")) squad.add(new Member(3, map.cell(6, 10), true, true, "dealer"));
+				else if (kind.equals("with_instinctive")) squad.add(new Member(3, map.cell(6, 10), false, false, "melee"));
+				else squad.add(new Member(3, map.cell(6, 10), true, false, "melee", 0.5f));
+			}
+			occupyAll(map, hero, squad);
+			String label = tactic + "/" + kind + "/" + terrain;
+			if (tactic.equals("advance") || tactic.equals("hold_range")) {
+				check(true, label + ": advance/hold_range have no planner execution path");
+			} else if (!tactic.equals("formation")) {
+				SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign(tactic, squad, hero, map);
+				check(!plan.byMember.isEmpty() || plan.degradeReason != null, label + ": assignment or degrade reason");
+			} else {
+				String reason = FormationPlanner.degradeReason(squad);
+				String expected = kind.equals("melee_ranged") ? "mixed_squad" : kind.equals("single_ranged") ? "too_few_melee" : null;
+				check(expected == null ? reason == null : expected.equals(reason), label + ": degrade reason " + reason);
+				if ("too_few_melee".equals(reason)) continue;
+				FormationPlanner.State st = new FormationPlanner.State();
+				for (int i = 0; i < 30; i++) {
+					Member mover = squad.get(i % squad.size());
+					int to = FormationPlanner.step(st, mover, squad, hero, map);
+					boolean participant = mover.tactical && !mover.ranged;
+					if (!participant) check(to == FormationPlanner.RELEASED, label + ": non-participant gets default AI");
+					if (to != FormationPlanner.RELEASED && to != mover.cell) {
+						check(!map.occupied(to) && map.passable(mover, to), label + ": legal formation step");
+						moveMember(map, squad, mover.id, to);
+					}
+				}
+			}
+		}
+		ArrayList<Member> one = squad(fm(1, 20, 1f), new Member(2, 21, false, false, "melee"));
+		check("too_few_melee".equals(FormationPlanner.degradeReason(one)), "instinctive member does not count as participant");
+		check(FormationPlanner.participants(squad(fm(3, 5, 1f), fm(1, 6, 1f))).get(0).id == 1, "participants sorted by id");
 	}
 
 	private static void checkSectors(SquadTestMap map, SquadMovementPlanner.SquadPlan plan, int hero) {
