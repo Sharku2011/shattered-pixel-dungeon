@@ -1465,6 +1465,7 @@ public abstract class Mob extends Char {
 					spend(1 / speed());
 					return true;
 				}
+				// R21: this tactical move bypasses subclass getCloser overrides (today only runtime Bees override it).
 				if (step >= 0 && cellIsPathable(step)) {
 					int oldPos = pos;
 					move(step);

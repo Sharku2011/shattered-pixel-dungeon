@@ -106,9 +106,10 @@ final class SquadMovementPlanner {
 				&& world.visible(m, cell) && world.visible(m, heroCell);
 	}
 
+	/** Tactical tank (lowest id), else the tactical melee member with the cheapest route; non-tactical members never lead. */
 	static int frontMember(List<Member> squad, int heroCell, SquadWorld world) {
 		Member best = null;
-		for (Member m : squad) if ("tank".equals(m.role) && (best == null || m.id < best.id)) best = m;
+		for (Member m : squad) if (m.tactical && "tank".equals(m.role) && (best == null || m.id < best.id)) best = m;
 		if (best != null) return best.id;
 		int bestCost = SquadDijkstra.UNREACHABLE;
 		for (Member m : squad) {

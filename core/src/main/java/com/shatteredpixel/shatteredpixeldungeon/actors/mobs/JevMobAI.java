@@ -68,7 +68,12 @@ public final class JevMobAI {
 		boolean degradeLogged;
 		/** Tactic that squadPlan/formation were built for; a different tactic discards both. */
 		String plannedTactic;
+		/** Consecutive blocked waits per member id (R17); reset when a planned step succeeds. */
+		final Map<Integer, Integer> blockedTurns = new HashMap<>();
 	}
+
+	/** Consecutive blocked waits after which a member falls back to the default AI. */
+	private static final int MAX_BLOCKED_WAITS = 2;
 
 	private JevMobAI() {}
 
@@ -108,6 +113,16 @@ public final class JevMobAI {
 
 	/** Local squad step for this mob: -1 = default AI, mob.pos = wait, otherwise the cell to move to. */
 	static int tacticalStep(Mob mob, String tactic) {
+		try {
+			return plannedStep(mob, tactic);
+		} catch (Exception e) {
+			// A planner fault must never crash the game thread; the default AI takes this turn.
+			log("planner_error", "where=tacticalStep error=" + e.getClass().getSimpleName());
+			return -1;
+		}
+	}
+
+	private static int plannedStep(Mob mob, String tactic) {
 		Level level = Dungeon.level;
 		Hero hero = Dungeon.hero;
 		if (mob == null || level == null || hero == null || tactic == null || mob.squadId < 0 || mob.enemy != hero) return -1;
@@ -131,6 +146,7 @@ public final class JevMobAI {
 			plan.squadPlan = null;
 			plan.formation = null;
 			plan.degradeLogged = false;
+			plan.blockedTurns.clear();
 		}
 		SquadWorld world = gameWorld(level, mobs);
 		return squadTactic ? squadStep(plan, tactic, mob, mover, squad, mobs, hero.pos, world)
@@ -139,12 +155,13 @@ public final class JevMobAI {
 
 	private static int squadStep(Plan plan, String tactic, Mob mob, SquadMovementPlanner.Member mover,
 			ArrayList<SquadMovementPlanner.Member> squad, ArrayList<Mob> mobs, int heroCell, SquadWorld world) {
-		if (plan.squadPlan == null) assignSquad(plan, tactic, squad, mobs, heroCell, world);
+		if (plan.squadPlan == null || frontStale(plan.squadPlan, squad)) assignSquad(plan, tactic, squad, mobs, heroCell, world);
 		SquadMovementPlanner.Assignment a = plan.squadPlan.byMember.get(mover.id);
 		if (a != null && !SquadMovementPlanner.goalLegal(mover, a.goal, heroCell, world)) {
+			int oldGoal = a.goal;
 			SquadMovementPlanner.reassign(plan.squadPlan, mover, squad, heroCell, world);
 			a = plan.squadPlan.byMember.get(mover.id);
-			logReassigned(mob, a, "invalid");
+			if (a == null || a.goal != oldGoal) logReassigned(mob, a, "invalid");
 		}
 		if (a != null && a.heroCell != heroCell) {
 			if (SquadMovementPlanner.retarget(plan.squadPlan, mover, squad, heroCell, world)) {
@@ -169,17 +186,39 @@ public final class JevMobAI {
 		// An escort standing on its goal holds the screen instead of drifting back to the default AI.
 		if ("escort".equals(a.maneuver) && a.goal == mob.pos) return mob.pos;
 		int step = SquadMovementPlanner.nextStep(plan.squadPlan, mover, squad, heroCell, world);
-		if (step >= 0 || a.goal == mob.pos) return step;
+		if (step >= 0) {
+			plan.blockedTurns.remove(mover.id);
+			return step;
+		}
+		if (a.goal == mob.pos) return step;
 		// No step off the goal: try one fresh goal, then wait in place (spec 6.2 step 4).
+		int oldGoal = a.goal;
 		boolean reassigned = SquadMovementPlanner.reassign(plan.squadPlan, mover, squad, heroCell, world);
 		a = plan.squadPlan.byMember.get(mover.id);
-		logReassigned(mob, a, "invalid");
+		if (a == null || a.goal != oldGoal) logReassigned(mob, a, "invalid");
 		if (!reassigned || a == null) return -1;
 		if ("escort".equals(a.maneuver) && a.goal == mob.pos) return mob.pos;
 		step = SquadMovementPlanner.nextStep(plan.squadPlan, mover, squad, heroCell, world);
-		if (step >= 0) return step;
+		if (step >= 0) {
+			plan.blockedTurns.remove(mover.id);
+			return step;
+		}
+		// Wait at most MAX_BLOCKED_WAITS consecutive turns, then let the default AI find another way.
+		Integer blocked = plan.blockedTurns.get(mover.id);
+		int waits = blocked == null ? 1 : blocked + 1;
+		plan.blockedTurns.put(mover.id, waits);
+		if (waits > MAX_BLOCKED_WAITS) return -1;
 		logMoveBlocked(mob, tactic, mob.pos);
 		return mob.pos;
+	}
+
+	/** The front stopped hunting (it no longer leads or screens), or there was no front and a tactical melee member now exists. */
+	private static boolean frontStale(SquadMovementPlanner.SquadPlan plan, List<SquadMovementPlanner.Member> squad) {
+		for (SquadMovementPlanner.Member m : squad) {
+			if (plan.frontId >= 0 && m.id == plan.frontId) return !m.tactical;
+			if (plan.frontId < 0 && m.tactical && !m.ranged) return true;
+		}
+		return plan.frontId >= 0;
 	}
 
 	private static void assignSquad(Plan plan, String tactic, ArrayList<SquadMovementPlanner.Member> squad,
@@ -204,7 +243,7 @@ public final class JevMobAI {
 			plan.formation = new FormationPlanner.State();
 			logDegraded(plan, tactic, reason, mob.squadId);
 		} else before = plan.formation.phase;
-		int step = FormationPlanner.step(plan.formation, mover, squad, heroCell, world);
+		int step = FormationPlanner.step(plan.formation, mover, squad, heroCell, world, Actor.now());
 		String after = plan.formation.phase;
 		String member = mob.getClass().getSimpleName() + "#" + mob.id();
 		if ("released".equals(after)) {
@@ -374,6 +413,22 @@ public final class JevMobAI {
 			ArrayList<SquadMovementPlanner.Member> plannerSquad = new ArrayList<>();
 			for (Mob member : members) plannerSquad.add(plannerMember(member));
 			Map<String, Object> squadState = new LinkedHashMap<>();
+			ArrayList<Integer> routeCosts = new ArrayList<>();
+			ArrayList<String> openSectors = null;
+			Boolean screenAvailable = null, squadConnected = null;
+			try {
+				for (SquadMovementPlanner.Member planned : plannerSquad) routeCosts.add(routeCostToHero(planned, Dungeon.hero.pos, world));
+				openSectors = SquadMovementPlanner.openSectors(plannerSquad, Dungeon.hero.pos, world);
+				screenAvailable = SquadMovementPlanner.screenPositionAvailable(plannerSquad, Dungeon.hero.pos, world);
+				squadConnected = FormationPlanner.connected(FormationPlanner.participants(plannerSquad), -1, -1, level.width());
+			} catch (Exception e) {
+				// Planner facts are advisory; on a planner fault the request goes out without them.
+				log("planner_error", "where=requestBatch squad=" + squadId + " error=" + e.getClass().getSimpleName());
+				routeCosts.clear();
+				openSectors = null;
+				screenAvailable = null;
+				squadConnected = null;
+			}
 			ArrayList<Map<String, Object>> memberStates = new ArrayList<>();
 			for (int i = 0; i < members.size(); i++) {
 				Mob member = members.get(i);
@@ -386,15 +441,15 @@ public final class JevMobAI {
 				data.put("defenseSkill", member.defenseSkill(Dungeon.hero));
 				data.put("balanceProfile", MonsterStats.jevBalanceProfile(member));
 				data.put("isRangedAttacker", isRangedAttacker(member));
-				data.put("routeCostToHero", routeCostToHero(plannerSquad.get(i), Dungeon.hero.pos, world));
+				if (i < routeCosts.size()) data.put("routeCostToHero", routeCosts.get(i));
 				data.put("observation", memberObservation);
 				memberStates.add(data);
 			}
 			squadState.put("members", memberStates);
 			squadState.put("memberCount", members.size());
-			squadState.put("openSectorsAroundHero", SquadMovementPlanner.openSectors(plannerSquad, Dungeon.hero.pos, world));
-			squadState.put("screenPositionAvailable", SquadMovementPlanner.screenPositionAvailable(plannerSquad, Dungeon.hero.pos, world));
-			squadState.put("squadConnected", FormationPlanner.connected(FormationPlanner.participants(plannerSquad), -1, -1, level.width()));
+			if (openSectors != null) squadState.put("openSectorsAroundHero", openSectors);
+			if (screenAvailable != null) squadState.put("screenPositionAvailable", screenAvailable);
+			if (squadConnected != null) squadState.put("squadConnected", squadConnected);
 			state.put("squad_" + squadId, squadState);
 			Map<String, Object> criteria = new LinkedHashMap<>();
 			criteria.put("advance", "Press the hero, close distance, and attack when legal. Use this when no other offered maneuver creates a useful advantage.");
@@ -535,9 +590,10 @@ public final class JevMobAI {
 		}
 	}
 
-	/** Walking steps from the member to the hero over the shared terrain map, or -1 when it cannot get there. */
+	/** Walking steps from the member to the hero anywhere on the level (characters ignored), or -1 when it cannot get there. */
 	private static int routeCostToHero(SquadMovementPlanner.Member member, int heroCell, SquadWorld world) {
-		int cost = FormationPlanner.heroMap(Collections.singletonList(member), heroCell, world)[member.cell];
+		SquadDijkstra.Bounds whole = SquadDijkstra.Bounds.around(world.width(), world.height(), 0, 0, world.width() * world.height() - 1);
+		int cost = FormationPlanner.heroMap(Collections.singletonList(member), heroCell, world, whole)[member.cell];
 		return cost == SquadDijkstra.UNREACHABLE ? -1 : cost / SquadCostField.BASE;
 	}
 
@@ -549,9 +605,14 @@ public final class JevMobAI {
 				|| type.equals("Succubus") || type.contains("Elemental");
 	}
 
+	/**
+	 * A member is tactical (front, escort tank, flanker, formation participant) only while it is hunting the hero and
+	 * not instinctive; sleeping, wandering or fleeing members stay in the squad list as obstacles only.
+	 */
 	private static SquadMovementPlanner.Member plannerMember(Mob mob) {
-		return new SquadMovementPlanner.Member(mob.id(), mob.pos,
-				!"instinctive".equals(mob.tacticalIntelligence()), isRangedAttacker(mob), mob.squadRole, mob.speed());
+		boolean tactical = mob.state == mob.HUNTING && mob.enemy == Dungeon.hero
+				&& !"instinctive".equals(mob.tacticalIntelligence());
+		return new SquadMovementPlanner.Member(mob.id(), mob.pos, tactical, isRangedAttacker(mob), mob.squadRole, mob.speed());
 	}
 
 	private static void buildRoleOptions(int roleIndex, ArrayList<Mob> members, ArrayList<String> roles,

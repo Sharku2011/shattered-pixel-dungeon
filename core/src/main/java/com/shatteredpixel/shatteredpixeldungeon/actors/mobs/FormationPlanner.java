@@ -12,9 +12,11 @@ final class FormationPlanner {
 
 	static final class State {
 		String phase = "gather";      // "gather" | "advance" | "contact" | "released"
-		int anchorId = -1, gatherTurns, stallTurns, bestProgress = SquadDijkstra.UNREACHABLE;
+		int anchorId = -1, gatherTurns, stallTurns;
 		/** Stall progress is lexicographic (sum of heroMap, sum of Euclidean^2 to the hero) over participants. */
 		long bestHeroSum = Long.MAX_VALUE, bestEuclidSum = Long.MAX_VALUE;
+		/** Game time of the last counter tick; counters advance once per elapsed whole turn on any participant's call. */
+		float lastTick = Float.NEGATIVE_INFINITY;
 		String releaseReason;         // "gather_timeout" | "stalled"
 	}
 
@@ -62,6 +64,11 @@ final class FormationPlanner {
 
 	/** Terrain-only distance to the hero (BASE per entered cell) over cells every participant can walk; characters ignored. */
 	static int[] heroMap(final List<Member> participants, int heroCell, final SquadWorld world) {
+		return heroMap(participants, heroCell, world, bounds(participants, heroCell, world));
+	}
+
+	/** heroMap over an explicit search box (e.g. the whole level). */
+	static int[] heroMap(final List<Member> participants, int heroCell, final SquadWorld world, SquadDijkstra.Bounds box) {
 		SquadDijkstra.Graph g = new SquadDijkstra.Graph() {
 			@Override public int width() { return world.width(); }
 			@Override public int height() { return world.height(); }
@@ -71,11 +78,11 @@ final class FormationPlanner {
 			}
 			@Override public int enterCost(int cell) { return SquadCostField.BASE; }
 		};
-		return SquadDijkstra.toTarget(g, heroCell, bounds(participants, heroCell, world));
+		return SquadDijkstra.toTarget(g, heroCell, box);
 	}
 
 	/** Returns the cell to move to, mover.cell to wait, or RELEASED to hand the mover back to the default AI. */
-	static int step(State s, Member mover, List<Member> squad, int heroCell, SquadWorld world) {
+	static int step(State s, Member mover, List<Member> squad, int heroCell, SquadWorld world, float now) {
 		ArrayList<Member> ps = participants(squad);
 		int w = world.width();
 		boolean participant = false;
@@ -88,28 +95,32 @@ final class FormationPlanner {
 		Member anchor = ps.get(0);
 		for (Member p : ps) if (p.speed < anchor.speed) anchor = p; // ps is id-ordered, so ties keep the lowest id
 		s.anchorId = anchor.id;
-		// The phase follows connectivity on every call; only the anchor's own turns advance the counters.
+		// The phase follows connectivity on every call; the counters advance by game time on any participant's call,
+		// so an anchor that never reaches its own tactical turn cannot freeze the squad.
 		if (!connected(ps, -1, -1, w)) {
-			if ("advance".equals(s.phase)) s.gatherTurns = 0;
+			if ("advance".equals(s.phase)) {
+				s.gatherTurns = 0;
+				s.stallTurns = 0;
+				s.bestHeroSum = Long.MAX_VALUE;
+				s.bestEuclidSum = Long.MAX_VALUE;
+			}
 			s.phase = "gather";
 		} else if ("gather".equals(s.phase)) s.phase = "advance";
 		int[] hero = null;
-		if (mover.id == anchor.id) {
+		if (now - s.lastTick >= 1f) {
+			s.lastTick = s.lastTick == Float.NEGATIVE_INFINITY ? now : s.lastTick + (float) Math.floor(now - s.lastTick);
 			if ("gather".equals(s.phase)) {
 				if (++s.gatherTurns > GATHER_TIMEOUT) return release(s, "gather_timeout");
 			} else {
 				hero = heroMap(ps, heroCell, world);
-				int progress = SquadDijkstra.UNREACHABLE;
 				long heroSum = 0, euclidSum = 0;
 				for (Member p : ps) {
-					progress = Math.min(progress, hero[p.cell]);
 					heroSum += hero[p.cell];
 					euclidSum += euclid2(p.cell, heroCell, w);
 				}
 				if (heroSum < s.bestHeroSum || (heroSum == s.bestHeroSum && euclidSum < s.bestEuclidSum)) {
 					s.bestHeroSum = heroSum;
 					s.bestEuclidSum = euclidSum;
-					s.bestProgress = progress;
 					s.stallTurns = 0;
 				} else if (++s.stallTurns >= STALL_LIMIT) return release(s, "stalled");
 			}

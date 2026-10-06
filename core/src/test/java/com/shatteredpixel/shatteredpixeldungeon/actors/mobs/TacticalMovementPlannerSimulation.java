@@ -44,6 +44,11 @@ public final class TacticalMovementPlannerSimulation {
 		degradeMatrixNeverThrows();
 		diagonalChainReachesContact();
 		formationStaysConnectedUntilContact();
+		disconnectedFormationsGatherAndFinish();
+		silentAnchorStillReleases();
+		regatherResetsStallProgress();
+		worstCaseEnterCostFitsDijkstra();
+		nonTacticalTankNeverLeads();
 		System.out.println("Tactical movement simulations passed; assertions=" + assertions);
 	}
 
@@ -494,9 +499,17 @@ public final class TacticalMovementPlannerSimulation {
 
 	/** 200 seeded random runs (17x17, given wall density); returns how many reach contact. */
 	private static int formationContacts(double wallRate, String label) {
-		Random rng = new Random(20261007L);
-		int contact = 0, released = 0;
-		for (int run = 0; run < 200; run++) {
+		return formationContacts(wallRate, label, false)[0];
+	}
+
+	/**
+	 * 200 seeded random runs; disconnected starts scatter the members (not one component) so gather is exercised.
+	 * Returns {contact, released, timeouts, gatherToAdvance}; every run must end in exactly one of the first three.
+	 */
+	private static int[] formationContacts(double wallRate, String label, boolean disconnected) {
+		Random rng = new Random(disconnected ? 20261008L : 20261007L);
+		int runs = 200, contact = 0, released = 0, timeouts = 0, regrouped = 0;
+		for (int run = 0; run < runs; run++) {
 			SquadTestMap map = null;
 			ArrayList<Member> squad = null;
 			int hero = -1;
@@ -504,16 +517,112 @@ public final class TacticalMovementPlannerSimulation {
 				map = new SquadTestMap(17, 17);
 				for (int y = 1; y < 16; y++) for (int x = 1; x < 16; x++) if (rng.nextDouble() < wallRate) map.wall(x, y);
 				hero = map.cell(1 + rng.nextInt(15), 1 + rng.nextInt(15));
-				if (map.walkable[hero]) squad = randomFormation(rng, map, hero);
+				if (map.walkable[hero]) squad = disconnected ? scatteredFormation(rng, map, hero) : randomFormation(rng, map, hero);
 			}
 			occupyAll(map, hero, squad);
-			FormationPlanner.State st = new FormationPlanner.State();
-			String phase = runFormation(map, squad, hero, st, 400, null);
+			final FormationPlanner.State st = new FormationPlanner.State();
+			final boolean[] reachedAdvance = {false};
+			String phase = runFormation(map, squad, hero, st, 400, () -> reachedAdvance[0] |= "advance".equals(st.phase), -1);
 			if ("contact".equals(phase)) contact++;
 			else if ("released".equals(phase)) released++;
+			else if ("timeout".equals(phase)) timeouts++;
+			if (reachedAdvance[0]) regrouped++;
 		}
-		System.out.println("formation random runs (" + label + "): contact=" + contact + " released=" + released + " of 200");
-		return contact;
+		System.out.println("formation random runs (" + label + "): contact=" + contact + " released=" + released
+				+ " timeouts=" + timeouts + " of " + runs + (disconnected ? " gather->advance=" + regrouped : ""));
+		check(contact + released + timeouts == runs, label + ": every run ends in contact, release or timeout");
+		check(timeouts == 0, label + ": no run hits the 400-action cap: " + timeouts);
+		return new int[]{contact, released, timeouts, regrouped};
+	}
+
+	private static void disconnectedFormationsGatherAndFinish() {
+		int[] r = formationContacts(0.0, "disconnected starts", true);
+		check(r[3] > 0, "some scattered formations regroup and advance: " + r[3]);
+		check(r[0] > 0, "some scattered formations reach contact: " + r[0]);
+	}
+
+	/** 3-4 melee participants scattered within a 7x7 box (never one component), at least 3 from the hero, all able to reach it. */
+	private static ArrayList<Member> scatteredFormation(Random rng, SquadTestMap map, int hero) {
+		int n = 3 + rng.nextInt(2);
+		int cx = 4 + rng.nextInt(9), cy = 4 + rng.nextInt(9);
+		ArrayList<Integer> cells = new ArrayList<>();
+		for (int tries = 0; tries < 200 && cells.size() < n; tries++) {
+			int c = map.cell(cx + rng.nextInt(7) - 3, cy + rng.nextInt(7) - 3);
+			if (map.walkable[c] && !cells.contains(c) && SquadMovementPlanner.distance(c, hero, map.width) >= 3) cells.add(c);
+		}
+		if (cells.size() < n) return null;
+		float[] speeds = {0.5f, 1f, 2f};
+		ArrayList<Member> squad = new ArrayList<>();
+		for (int i = 0; i < n; i++) squad.add(new Member(i + 1, cells.get(i), true, false, "melee", speeds[rng.nextInt(3)]));
+		if (FormationPlanner.connected(squad, -1, -1, map.width)) return null;
+		int[] h = FormationPlanner.heroMap(squad, hero, map);
+		for (Member m : squad) if (h[m.cell] == SquadDijkstra.UNREACHABLE) return null;
+		return squad;
+	}
+
+	/** Importants #1b/#1c: an anchor that never takes a tactical turn still lets the formation release. */
+	private static void silentAnchorStillReleases() {
+		SquadTestMap cut = new SquadTestMap(15, 15);
+		for (int y = 1; y < 14; y++) cut.wall(7, y);
+		int hero = cut.cell(12, 12);
+		ArrayList<Member> apart = squad(fm(1, cut.cell(3, 7), 0.5f), fm(2, cut.cell(10, 7), 1f));
+		occupyAll(cut, hero, apart);
+		FormationPlanner.State st = new FormationPlanner.State();
+		String phase = runFormation(cut, apart, hero, st, 40, null, 1);
+		check("released".equals(phase) && "gather_timeout".equals(st.releaseReason),
+				"disconnected squad with a silent anchor times out of gather: " + phase + " " + st.releaseReason);
+
+		SquadTestMap open = new SquadTestMap(15, 15);
+		hero = open.cell(12, 7);
+		ArrayList<Member> joined = squad(fm(1, open.cell(4, 7), 0.5f), fm(2, open.cell(3, 7), 1f), fm(3, open.cell(3, 8), 1f));
+		occupyAll(open, hero, joined);
+		st = new FormationPlanner.State();
+		phase = runFormation(open, joined, hero, st, 60, null, 1);
+		check("released".equals(phase) && "stalled".equals(st.releaseReason),
+				"connected squad pinned to a silent anchor releases as stalled: " + phase + " " + st.releaseReason);
+	}
+
+	/** Should-fix #3: advance -> gather clears stall progress, so a regrouped formation does not release early. */
+	private static void regatherResetsStallProgress() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(12, 7);
+		ArrayList<Member> squad = squad(fm(1, map.cell(4, 7), 1f), fm(2, map.cell(3, 7), 1f));
+		occupyAll(map, hero, squad);
+		FormationPlanner.State st = new FormationPlanner.State();
+		FormationPlanner.step(st, squad.get(0), squad, hero, map, 1f);
+		check("advance".equals(st.phase) && st.bestHeroSum != Long.MAX_VALUE, "advance records best progress");
+		st.stallTurns = 2;
+		moveMember(map, squad, 2, map.cell(1, 7));
+		FormationPlanner.step(st, squad.get(1), squad, hero, map, 1.5f);
+		check("gather".equals(st.phase) && st.stallTurns == 0 && st.bestHeroSum == Long.MAX_VALUE
+				&& st.bestEuclidSum == Long.MAX_VALUE, "entering gather resets stall progress");
+	}
+
+	/** Important #2c: the largest possible cost-field enter cost stays within Dijkstra's bucket ceiling. */
+	private static void worstCaseEnterCostFitsDijkstra() {
+		int worst = SquadCostField.BASE + SquadCostField.HERO_RING1 + SquadCostField.AXIS_NEAR + SquadCostField.RESERVED
+				+ SquadCostField.SQUADMATE_ADJ;
+		check(worst <= SquadDijkstra.MAX_ENTER_COST, "worst-case enter cost " + worst + " <= " + SquadDijkstra.MAX_ENTER_COST);
+	}
+
+	/** Important #1a: a tank that is not hunting (non-tactical) is never front or escort, and never a flanker. */
+	private static void nonTacticalTankNeverLeads() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(7, 7);
+		SquadMovementPlanner.Member sleepyTank = member(1, map.cell(3, 7), false, false, "tank");
+		ArrayList<SquadMovementPlanner.Member> squad = squad(sleepyTank, member(2, map.cell(3, 4)), member(3, map.cell(3, 10)),
+				member(5, map.cell(2, 7), true, true, "dealer"));
+		occupyAll(map, hero, squad);
+		int front = SquadMovementPlanner.frontMember(squad, hero, map);
+		check(front != 1 && front >= 0, "non-tactical tank is not front: " + front);
+		SquadMovementPlanner.SquadPlan escort = SquadMovementPlanner.assign("escort_ranged", squad, hero, map);
+		check(!escort.byMember.containsKey(1), "non-tactical tank gets no escort or flank goal");
+		SquadMovementPlanner.SquadPlan flank = SquadMovementPlanner.assign("flank", squad, hero, map);
+		check(!flank.byMember.containsKey(1) && flank.frontId != 1, "non-tactical tank takes no flank sector");
+		ArrayList<Member> withSleeper = squad(new Member(1, map.cell(3, 7), false, false, "melee", 0.5f), fm(2, map.cell(10, 2), 1f),
+				fm(3, map.cell(10, 3), 1f));
+		check(FormationPlanner.participants(withSleeper).size() == 2 && FormationPlanner.participants(withSleeper).get(0).id == 2,
+				"non-tactical member is not a formation participant (cannot be the anchor)");
 	}
 
 	/** 3-4 connected melee participants at least 3 from the hero, all able to reach it; null when placement fails. */
@@ -544,16 +653,24 @@ public final class TacticalMovementPlannerSimulation {
 	 */
 	private static String runFormation(SquadTestMap map, ArrayList<Member> squad, int hero, FormationPlanner.State st,
 			int maxActions, Runnable afterEach) {
+		return runFormation(map, squad, hero, st, maxActions, afterEach, -1);
+	}
+
+	/** As above; silentId (or -1) never acts, like an anchor that never reaches its tactical turn. */
+	private static String runFormation(SquadTestMap map, ArrayList<Member> squad, int hero, FormationPlanner.State st,
+			int maxActions, Runnable afterEach, int silentId) {
 		HashMap<Integer, Double> clock = new HashMap<>();
 		for (Member m : squad) clock.put(m.id, 1.0 / m.speed);
 		for (int action = 0; action < maxActions; action++) {
 			Member mover = null;
 			for (Member m : squad) {
+				if (m.id == silentId) continue;
 				double t = clock.get(m.id);
 				if (mover == null || t < clock.get(mover.id) || (t == clock.get(mover.id) && m.id < mover.id)) mover = m;
 			}
-			clock.put(mover.id, clock.get(mover.id) + 1.0 / mover.speed);
-			int to = FormationPlanner.step(st, mover, squad, hero, map);
+			double now = clock.get(mover.id);
+			clock.put(mover.id, now + 1.0 / mover.speed);
+			int to = FormationPlanner.step(st, mover, squad, hero, map, (float) now);
 			if (to == FormationPlanner.RELEASED) {
 				check("contact".equals(st.phase) || "released".equals(st.phase), "first RELEASED comes with contact/released: " + st.phase);
 				return st.phase;
@@ -563,7 +680,8 @@ public final class TacticalMovementPlannerSimulation {
 						"formation step is a free adjacent passable cell");
 				moveMember(map, squad, mover.id, to);
 			}
-			if ("gather".equals(st.phase) || "advance".equals(st.phase))
+			// Gather is by definition not yet connected; only advance must keep the group in one piece.
+			if ("advance".equals(st.phase))
 				check(FormationPlanner.connected(FormationPlanner.participants(squad), -1, -1, map.width), "formation stays connected");
 			if (afterEach != null) afterEach.run();
 		}
@@ -606,15 +724,15 @@ public final class TacticalMovementPlannerSimulation {
 		ArrayList<Member> squad = squad(fm(1, map.cell(2, 7), 0.5f), fm(2, map.cell(7, 7), 1f));
 		occupyAll(map, hero, squad);
 		FormationPlanner.State st = new FormationPlanner.State();
-		check(FormationPlanner.step(st, squad.get(0), squad, hero, map) == squad.get(0).cell && "gather".equals(st.phase), "anchor waits while gathering");
+		check(FormationPlanner.step(st, squad.get(0), squad, hero, map, 0f) == squad.get(0).cell && "gather".equals(st.phase), "anchor waits while gathering");
 		for (int i = 0; i < 6 && !"advance".equals(st.phase); i++) {
 			Member other = squad.get(1), anchor = squad.get(0);
 			int before = SquadMovementPlanner.distance(other.cell, anchor.cell, map.width);
-			int to = FormationPlanner.step(st, other, squad, hero, map);
+			int to = FormationPlanner.step(st, other, squad, hero, map, i);
 			check(to != FormationPlanner.RELEASED && SquadMovementPlanner.distance(to, anchor.cell, map.width) < before, "non-anchor moves toward anchor");
 			moveMember(map, squad, other.id, to);
 			if (!"advance".equals(st.phase))
-				check(FormationPlanner.step(st, anchor, squad, hero, map) == anchor.cell && "gather".equals(st.phase), "anchor keeps waiting");
+				check(FormationPlanner.step(st, anchor, squad, hero, map, i) == anchor.cell && "gather".equals(st.phase), "anchor keeps waiting");
 		}
 		check("advance".equals(st.phase) && FormationPlanner.connected(squad, -1, -1, map.width), "phase advance once connected");
 		check(st.anchorId == 1, "anchor is slowest member");
@@ -628,12 +746,13 @@ public final class TacticalMovementPlannerSimulation {
 		occupyAll(map, hero, squad);
 		FormationPlanner.State st = new FormationPlanner.State();
 		for (int turn = 1; turn <= 4; turn++) {
-			check(FormationPlanner.step(st, squad.get(1), squad, hero, map) == squad.get(1).cell, "cut-off member waits");
-			check(FormationPlanner.step(st, squad.get(0), squad, hero, map) == squad.get(0).cell, "anchor waits on gather turn " + turn);
+			check(FormationPlanner.step(st, squad.get(1), squad, hero, map, turn) == squad.get(1).cell, "cut-off member waits");
+			check(FormationPlanner.step(st, squad.get(0), squad, hero, map, turn) == squad.get(0).cell && st.gatherTurns == turn,
+					"anchor waits on gather turn " + turn + "; one counter tick per turn");
 		}
-		check(FormationPlanner.step(st, squad.get(0), squad, hero, map) == FormationPlanner.RELEASED
-				&& "released".equals(st.phase) && "gather_timeout".equals(st.releaseReason), "5th anchor gather turn releases");
-		check(FormationPlanner.step(st, squad.get(1), squad, hero, map) == FormationPlanner.RELEASED, "released stays released");
+		check(FormationPlanner.step(st, squad.get(0), squad, hero, map, 5f) == FormationPlanner.RELEASED
+				&& "released".equals(st.phase) && "gather_timeout".equals(st.releaseReason), "5th gather turn releases");
+		check(FormationPlanner.step(st, squad.get(1), squad, hero, map, 5f) == FormationPlanner.RELEASED, "released stays released");
 	}
 
 	private static void immobileAnchorReleasesAfterStall() {
@@ -644,12 +763,12 @@ public final class TacticalMovementPlannerSimulation {
 		for (int y = 5; y <= 9; y++) for (int x = 2; x <= 5; x++) if (!map.occupied(map.cell(x, y))) map.occupy(map.cell(x, y));
 		FormationPlanner.State st = new FormationPlanner.State();
 		Member anchor = squad.get(0);
-		check(FormationPlanner.step(st, anchor, squad, hero, map) == anchor.cell && "advance".equals(st.phase), "boxed anchor waits; best progress set");
+		check(FormationPlanner.step(st, anchor, squad, hero, map, 0f) == anchor.cell && "advance".equals(st.phase), "boxed anchor waits; best progress set");
 		for (int turn = 1; turn <= 2; turn++) {
-			check(FormationPlanner.step(st, squad.get(1), squad, hero, map) == squad.get(1).cell, "boxed follower waits");
-			check(FormationPlanner.step(st, anchor, squad, hero, map) == anchor.cell && st.stallTurns == turn, "stall turn " + turn);
+			check(FormationPlanner.step(st, squad.get(1), squad, hero, map, turn) == squad.get(1).cell, "boxed follower waits");
+			check(FormationPlanner.step(st, anchor, squad, hero, map, turn + 0.5f) == anchor.cell && st.stallTurns == turn, "stall turn " + turn);
 		}
-		check(FormationPlanner.step(st, anchor, squad, hero, map) == FormationPlanner.RELEASED
+		check(FormationPlanner.step(st, anchor, squad, hero, map, 3f) == FormationPlanner.RELEASED
 				&& "released".equals(st.phase) && "stalled".equals(st.releaseReason), "3rd consecutive stall releases");
 	}
 
@@ -685,7 +804,7 @@ public final class TacticalMovementPlannerSimulation {
 				FormationPlanner.State st = new FormationPlanner.State();
 				for (int i = 0; i < 30; i++) {
 					Member mover = squad.get(i % squad.size());
-					int to = FormationPlanner.step(st, mover, squad, hero, map);
+					int to = FormationPlanner.step(st, mover, squad, hero, map, (float) i / squad.size());
 					boolean participant = mover.tactical && !mover.ranged;
 					if (!participant) check(to == FormationPlanner.RELEASED, label + ": non-participant gets default AI");
 					if (to != FormationPlanner.RELEASED && to != mover.cell) {
