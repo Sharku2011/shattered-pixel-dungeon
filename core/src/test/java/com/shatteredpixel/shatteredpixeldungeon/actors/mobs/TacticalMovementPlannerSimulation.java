@@ -105,6 +105,10 @@ public final class TacticalMovementPlannerSimulation {
 		check(!SquadDijkstra.tracePath(oneHot, d1, src, dst).contains(map.cell(4, 2)), "path avoids expensive cell");
 		SquadDijkstra.Graph column = costed(map, c -> map.x(c) == 4 ? 100 : 10);
 		check(SquadDijkstra.fromSource(column, src, all)[dst] == 5 * 10 + 100, "forced crossing pays once");
+		SquadDijkstra.Graph costlyDst = costed(map, c -> c == dst ? 50 : 10);
+		check(SquadDijkstra.toTarget(costlyDst, dst, all)[src] == 5 * 10 + 50, "toTarget sums cells entered walking src to dst (includes dst, excludes src)");
+		check(SquadDijkstra.fromSource(costlyDst, dst, all)[src] == 5 * 10 + 10, "fromSource reverse walk includes src, excludes dst");
+		check(SquadDijkstra.toTarget(costlyDst, dst, all)[src] != SquadDijkstra.fromSource(costlyDst, dst, all)[src], "toTarget differs from fromSource under asymmetric cost");
 	}
 
 	private static void boundsClampAtMapCorner() {
