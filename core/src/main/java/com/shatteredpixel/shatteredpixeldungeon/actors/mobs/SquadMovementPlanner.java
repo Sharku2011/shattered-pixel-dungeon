@@ -21,13 +21,19 @@ final class SquadMovementPlanner {
 		final boolean tactical;
 		final boolean ranged;
 		final String role;
+		final float speed;
 
 		Member(int id, int cell, boolean tactical, boolean ranged, String role) {
+			this(id, cell, tactical, ranged, role, 1f);
+		}
+
+		Member(int id, int cell, boolean tactical, boolean ranged, String role, float speed) {
 			this.id = id;
 			this.cell = cell;
 			this.tactical = tactical;
 			this.ranged = ranged;
 			this.role = role;
+			this.speed = speed;
 		}
 	}
 

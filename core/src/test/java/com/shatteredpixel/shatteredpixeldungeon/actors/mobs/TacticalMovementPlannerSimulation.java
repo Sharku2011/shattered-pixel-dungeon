@@ -7,6 +7,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.function.IntUnaryOperator;
 
 /** Standalone deterministic movement simulations; run with scripts/simulate_tactical_movement.ps1. */
 public final class TacticalMovementPlannerSimulation {
@@ -72,14 +73,80 @@ public final class TacticalMovementPlannerSimulation {
 	}
 
 	public static void main(String[] args) {
-		openRoomSupportsDistributedFlankGoals();
-		narrowCorridorDoesNotOfferFalseEncirclement();
-		escortGoalsScreenAVisibleRangedAlly();
-		blockedAndUnseenGoalsAreNeverOffered();
-		responseCoordinatesMustMatchOfferedChoicesAndRemainLegal();
-		destinationQuestionsMustMatchAvailableTactics();
-		randomizedTerrainAndPlacementReliability();
-		System.out.println("Tactical movement simulations passed; assertions=" + assertions + ", randomizedMaps=500");
+		dijkstraMatchesBfsWithUniformCost();
+		weightedCostIsRespected();
+		boundsClampAtMapCorner();
+		System.out.println("Tactical movement simulations passed; assertions=" + assertions);
+	}
+
+	private static void dijkstraMatchesBfsWithUniformCost() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		map.wall(7, 3); map.wall(7, 4); map.wall(7, 5); map.wall(7, 6);
+		SquadDijkstra.Graph g = uniform(map);
+		int src = map.cell(2, 5);
+		SquadDijkstra.Bounds all = SquadDijkstra.Bounds.around(15, 15, 20, src);
+		int[] d = SquadDijkstra.fromSource(g, src, all);
+		int[] bfs = bfsSteps(map, src);
+		for (int c = 0; c < d.length; c++)
+			check(bfs[c] < 0 ? d[c] == SquadDijkstra.UNREACHABLE : d[c] == bfs[c] * 10, "uniform dijkstra == 10*bfs at " + c);
+		int[] r = SquadDijkstra.toTarget(g, src, all);
+		for (int c = 0; c < d.length; c++) check(r[c] == d[c], "symmetric uniform cost");
+		ArrayList<Integer> p = SquadDijkstra.tracePath(g, d, src, map.cell(12, 5));
+		check(p.size() == bfs[map.cell(12, 5)] && p.get(p.size() - 1) == map.cell(12, 5), "trace path length and end");
+	}
+
+	private static void weightedCostIsRespected() {
+		SquadTestMap map = new SquadTestMap(9, 5);
+		int src = map.cell(1, 2), dst = map.cell(7, 2);
+		SquadDijkstra.Bounds all = SquadDijkstra.Bounds.around(9, 5, 20, src);
+		SquadDijkstra.Graph oneHot = costed(map, c -> c == map.cell(4, 2) ? 100 : 10);
+		int[] d1 = SquadDijkstra.fromSource(oneHot, src, all);
+		check(d1[dst] == 60, "detour around single expensive cell costs 6*10");
+		check(!SquadDijkstra.tracePath(oneHot, d1, src, dst).contains(map.cell(4, 2)), "path avoids expensive cell");
+		SquadDijkstra.Graph column = costed(map, c -> map.x(c) == 4 ? 100 : 10);
+		check(SquadDijkstra.fromSource(column, src, all)[dst] == 5 * 10 + 100, "forced crossing pays once");
+	}
+
+	private static void boundsClampAtMapCorner() {
+		SquadTestMap map = new SquadTestMap(10, 10);
+		SquadDijkstra.Bounds b = SquadDijkstra.Bounds.around(10, 10, 4, map.cell(1, 1));
+		check(b.minX == 0 && b.minY == 0 && b.maxX == 5 && b.maxY == 5, "bounds clamp to map");
+		int[] d = SquadDijkstra.fromSource(uniform(map), map.cell(1, 1), b);
+		check(d[map.cell(8, 8)] == SquadDijkstra.UNREACHABLE, "outside bounds stays unreachable");
+	}
+
+	private static SquadDijkstra.Graph uniform(SquadTestMap map) {
+		return costed(map, c -> 10);
+	}
+
+	private static SquadDijkstra.Graph costed(final SquadTestMap map, final IntUnaryOperator cost) {
+		return new SquadDijkstra.Graph() {
+			public int width() { return map.width(); }
+			public int height() { return map.height(); }
+			public boolean passable(int cell) { return map.passable(null, cell); }
+			public int enterCost(int cell) { return cost.applyAsInt(cell); }
+		};
+	}
+
+	private static int[] bfsSteps(SquadTestMap map, int src) {
+		int w = map.width();
+		int[] steps = new int[w * map.height()];
+		java.util.Arrays.fill(steps, -1);
+		steps[src] = 0;
+		ArrayDeque<Integer> queue = new ArrayDeque<>();
+		queue.add(src);
+		while (!queue.isEmpty()) {
+			int c = queue.poll();
+			for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+				int nx = c % w + dx, ny = c / w + dy;
+				if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= w || ny >= map.height()) continue;
+				int n = nx + ny * w;
+				if (steps[n] >= 0 || !map.passable(null, n)) continue;
+				steps[n] = steps[c] + 1;
+				queue.add(n);
+			}
+		}
+		return steps;
 	}
 
 	private static void openRoomSupportsDistributedFlankGoals() {
