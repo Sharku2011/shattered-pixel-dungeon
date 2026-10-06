@@ -32,11 +32,11 @@ import java.nio.file.Paths;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.nio.file.StandardOpenOption;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -63,8 +63,6 @@ public final class JevMobAI {
 		int heroPosition;
 		float createdAt;
 		boolean requestAttempted;
-		final Map<Integer, Integer> moveGoals = new HashMap<>();
-		final Map<Integer, String> moveGoalTypes = new HashMap<>();
 		SquadMovementPlanner.SquadPlan squadPlan;
 		FormationPlanner.State formation;
 		boolean degradeLogged;
@@ -368,24 +366,17 @@ public final class JevMobAI {
 		Map<String, Object> questions = new LinkedHashMap<>();
 		Map<String, Map<String, Map<Integer, String>>> roleChoiceOptions = new LinkedHashMap<>();
 		Map<Integer, String> roleQuestionKeys = new LinkedHashMap<>();
-		Map<String, Map<String, SquadMovementPlanner.Candidate>> destinationChoiceOptions = new LinkedHashMap<>();
-		Map<String, Integer> destinationQuestionSquads = new LinkedHashMap<>();
-		Map<String, Integer> destinationQuestionMembers = new LinkedHashMap<>();
 		for (Map.Entry<Integer, ArrayList<Mob>> entry : candidatesBySquad.entrySet()) {
 			int squadId = entry.getKey();
 			ArrayList<Mob> members = MobSquads.members(level, squadId);
 			if (members.isEmpty()) members.addAll(entry.getValue());
-			boolean hasRangedAlly = false;
-			for (Mob member : members) {
-				hasRangedAlly |= isRangedAttacker(member);
-			}
-			HashSet<Integer> flankDirections = new HashSet<>();
-			int flankMembersWithCandidates = 0;
-			boolean hasEscortCandidates = false;
-			Map<Integer, ArrayList<SquadMovementPlanner.Candidate>> movementOptionsByMember = new LinkedHashMap<>();
+			SquadWorld world = gameWorld(level, members);
+			ArrayList<SquadMovementPlanner.Member> plannerSquad = new ArrayList<>();
+			for (Mob member : members) plannerSquad.add(plannerMember(member));
 			Map<String, Object> squadState = new LinkedHashMap<>();
 			ArrayList<Map<String, Object>> memberStates = new ArrayList<>();
-			for (Mob member : members) {
+			for (int i = 0; i < members.size(); i++) {
+				Mob member = members.get(i);
 				Map<String, Object> memberObservation = observation(member, level);
 				Map<String, Object> data = characterState(member, level);
 				data.put("id", member.id());
@@ -395,91 +386,43 @@ public final class JevMobAI {
 				data.put("defenseSkill", member.defenseSkill(Dungeon.hero));
 				data.put("balanceProfile", MonsterStats.jevBalanceProfile(member));
 				data.put("isRangedAttacker", isRangedAttacker(member));
+				data.put("routeCostToHero", routeCostToHero(plannerSquad.get(i), Dungeon.hero.pos, world));
 				data.put("observation", memberObservation);
 				memberStates.add(data);
-
-				ArrayList<SquadMovementPlanner.Candidate> candidates = movementCandidates(member, members, level);
-				movementOptionsByMember.put(member.id(), candidates);
-				boolean memberCanFlank = false;
-				for (SquadMovementPlanner.Candidate candidate : candidates) {
-					if ("flank".equals(candidate.maneuver)) {
-						memberCanFlank = true;
-						flankDirections.add(SquadMovementPlanner.directionBucket(
-								candidate.cell, Dungeon.hero.pos, level.width()));
-					}
-					if ("escort".equals(candidate.maneuver)) hasEscortCandidates = true;
-				}
-				if (memberCanFlank) flankMembersWithCandidates++;
-			}
-			boolean flankAvailable = members.size() >= 2 && flankMembersWithCandidates >= 1;
-			ArrayList<String> flankApproachDirections = new ArrayList<>();
-			for (int direction = 0; direction < 8; direction++) {
-				if (flankDirections.contains(direction)) {
-					flankApproachDirections.add(SquadMovementPlanner.directionName(direction));
-				}
 			}
 			squadState.put("members", memberStates);
 			squadState.put("memberCount", members.size());
-			squadState.put("flankMembersWithReachableGoals", flankMembersWithCandidates);
-			squadState.put("flankApproachDirections", flankApproachDirections);
-			squadState.put("escortGoalAvailable", hasEscortCandidates);
+			squadState.put("openSectorsAroundHero", SquadMovementPlanner.openSectors(plannerSquad, Dungeon.hero.pos, world));
+			squadState.put("screenPositionAvailable", SquadMovementPlanner.screenPositionAvailable(plannerSquad, Dungeon.hero.pos, world));
+			squadState.put("squadConnected", FormationPlanner.connected(FormationPlanner.participants(plannerSquad), -1, -1, level.width()));
 			state.put("squad_" + squadId, squadState);
 			Map<String, Object> criteria = new LinkedHashMap<>();
 			criteria.put("advance", "Press the hero, close distance, and attack when legal. Use this when no other offered maneuver creates a useful advantage.");
-			if (flankAvailable) criteria.put("flank", "Send members with listed flank goals toward open positions around the hero; squadmates without a goal keep pressuring normally.");
-			if (hasEscortCandidates) criteria.put("escort_ranged", "The tank screens a ranged squadmate by moving between that ally and the hero; other tactical members create pressure around the hero.");
-			if (hasRangedAlly) criteria.put("hold_range", "Ranged monsters preserve distance and attack when a legal shot is available; others advance as needed.");
+			criteria.put("flank", "While the frontmost member pressures the hero, melee members circle around the front to different side or rear sectors and close in on the hero. Only effective when openSectorsAroundHero is not empty.");
+			criteria.put("escort_ranged", "The tank screens a ranged squadmate by moving between that ally and the hero while the other melee members circle around to the flanks. Only effective when screenPositionAvailable is true.");
+			criteria.put("hold_range", "Ranged monsters preserve distance and attack when a legal shot is available; others advance as needed.");
+			criteria.put("formation", "A squad of melee members keeps a tight connected line and advances together at the pace of its slowest member, so everyone makes contact at the same time. Ranged and instinctive members do not join the line. Best when squadConnected is true and the squad is all melee.");
 			Map<String, Object> question = new LinkedHashMap<>();
 			question.put("type", "choice");
 			question.put("instructions", "Choose the maneuver that gives this squad the clearest tactical advantage; do not select advance automatically when another offered maneuver is useful. "
 					+ "Choose one short combat maneuver for the whole squad, not an individual attack. "
 					+ "advance means close in and use each monster's normal legal attacks. "
-					+ "flank means send members with listed goal cells toward open positions around the hero; other members pressure the hero normally. "
-					+ "It is a coordinated approach, not a special attack, and a flanker may need several local pathfinding turns to reach a goal. "
+					+ "flank means melee members circle around the front member to different open sectors around the hero. "
+					+ "It is a coordinated approach, not a special attack, and a flanker may need several local pathfinding turns to reach its place. "
 					+ "escort_ranged means the tank moves between the hero and a ranged ally while other eligible members pressure from another angle. "
 					+ "hold_range means ranged members keep distance when they can shoot; melee members still approach. "
+					+ "formation means melee members advance as one connected line at the slowest member's pace. "
 					+ "Each member's observation map and visibleCharacters show only what that monster can currently see; '?' and unseen hero details are unknown. "
-					+ "enemyDistance and listed goal distance are Chebyshev grid distances (a diagonal step counts as one), not route lengths. "
-					+ "flankMembersWithReachableGoals and flankApproachDirections summarize legal, visible destinations; flank is offered when at least one member has a reachable flank goal. "
+					+ "enemyDistance is a Chebyshev grid distance (a diagonal step counts as one), not a route length. "
+					+ "Squad state facts: openSectorsAroundHero lists compass sectors where a flanker could reach the hero, screenPositionAvailable says whether a tank can screen a ranged ally, "
+					+ "squadConnected says whether the melee members currently touch each other, and a member's routeCostToHero is its walking steps to the hero (-1 if unreachable). "
 					+ "Member balanceProfile multipliers are fixed at spawn; role labels do not change stats. "
-					+ "Use floor, visible terrain, squad roles and intelligence to choose. For flank or escort_ranged, coordinate with the separate destination questions. "
-					+ "The game validates goals, pathfinds locally, and uses normal combat after movement. Never choose a maneuver omitted from criteria.");
+					+ "Use floor, visible terrain, squad roles and intelligence to choose. "
+					+ "The game pathfinds locally and uses normal combat after movement.");
 			question.put("criteria", criteria);
 			questions.put("squad_" + squadId, question);
 
 			boolean roleSelectionPending = MobSquads.needsRoleSelection(members) && members.size() >= 2;
-			if (flankAvailable || hasEscortCandidates) {
-				for (Mob member : members) {
-					ArrayList<SquadMovementPlanner.Candidate> candidates = movementOptionsByMember.get(member.id());
-					if (candidates == null || candidates.isEmpty()) continue;
-					Map<String, SquadMovementPlanner.Candidate> options = new LinkedHashMap<>();
-					Map<String, Object> moveCriteria = new LinkedHashMap<>();
-					boolean isTank = "tank".equals(member.squadRole);
-					for (SquadMovementPlanner.Candidate candidate : candidates) {
-						if (!SquadMovementPlanner.relevantForTactics(candidate, flankAvailable,
-								hasEscortCandidates, roleSelectionPending, isTank)) continue;
-						int x = candidate.cell % level.width();
-						int y = candidate.cell / level.width();
-						String choice = SquadMovementPlanner.choiceKey(candidate, level.width());
-						options.put(choice, candidate);
-						moveCriteria.put(choice, moveChoiceDescription(candidate, x, y, member, members, level));
-					}
-					if (options.isEmpty()) continue;
-					String moveQuestionKey = "move_squad_" + squadId + "_member_" + member.id();
-					Map<String, Object> moveQuestion = new LinkedHashMap<>();
-					moveQuestion.put("type", "choice");
-					moveQuestion.put("instructions", "Choose one listed goal cell for this member, only if it matches the squad maneuver. "
-							+ "A flank_* goal moves toward a different compass sector around the hero; it does not attack by itself. "
-							+ "An escort_* goal is for the tank to screen a visible ranged ally. The game takes one local pathfinding step per movement turn and attacks normally when able. "
-							+ "The maneuver and goals are answered in parallel, so choose compatible options and different flank sectors for different members. "
-							+ "Every listed goal is visible, passable and reachable now. Coordinates are (x,y); distances use Chebyshev steps (a diagonal counts as one), not route length. Never invent a goal.");
-					moveQuestion.put("criteria", moveCriteria);
-					questions.put(moveQuestionKey, moveQuestion);
-					destinationChoiceOptions.put(moveQuestionKey, options);
-					destinationQuestionSquads.put(moveQuestionKey, squadId);
-					destinationQuestionMembers.put(moveQuestionKey, member.id());
-				}
-			}
 
 			if (roleSelectionPending) {
 				String roleQuestionKey = "roles_squad_" + squadId;
@@ -547,9 +490,12 @@ public final class JevMobAI {
 						String choice = answer.getString("choice");
 						float confidence = answer.has("confidence") ? answer.getFloat("confidence") : 0f;
 						if ("advance".equals(choice) || "flank".equals(choice)
-								|| "escort_ranged".equals(choice) || "hold_range".equals(choice)) {
+								|| "escort_ranged".equals(choice) || "hold_range".equals(choice) || "formation".equals(choice)) {
 							if (confidence >= 0.45f) {
-								plans.get(squadId).tactic = choice;
+								Plan accepted = plans.get(squadId);
+								accepted.tactic = choice;
+								accepted.squadPlan = null;
+								accepted.formation = null;
 								tacticAnnouncements.put(squadId, choice);
 								log("decision", "squad=" + squadId + " tactic=" + choice + " confidence=" + confidence);
 							}
@@ -579,72 +525,6 @@ public final class JevMobAI {
 						leader.yell(Messages.get(JevMobAI.class, "tactic_" + entry.getValue()));
 					}
 				}
-				for (Map.Entry<String, Map<String, SquadMovementPlanner.Candidate>> entry : destinationChoiceOptions.entrySet()) {
-					JsonValue answer = answers.get(entry.getKey());
-					if (answer == null || !answer.has("choice")) continue;
-					String choice = answer.getString("choice");
-					float confidence = answer.has("confidence") ? answer.getFloat("confidence") : 0f;
-					Integer squadId = destinationQuestionSquads.get(entry.getKey());
-					Integer memberId = destinationQuestionMembers.get(entry.getKey());
-					Plan plan = squadId == null ? null : plans.get(squadId);
-					Mob member = memberId == null ? null : findMember(level, memberId);
-					String maneuver = requiredManeuver(plan, member);
-					SquadMovementPlanner.Candidate offered = entry.getValue().get(choice);
-					SquadMovementPlanner.Candidate destination = SquadMovementPlanner.validateChoice(
-							choice, entry.getValue(), member == null ? null : plannerMember(member), maneuver,
-							member == null ? null : movementWorld(member, level));
-					if (destination == null || confidence < 0.45f) {
-						String reason = confidence < 0.45f ? "low_confidence"
-								: offered == null ? "choice_not_offered"
-								: maneuver == null || !maneuver.equals(offered.maneuver) ? "tactic_mismatch"
-								: "candidate_invalidated";
-						log("move_goal_rejected", "question=" + entry.getKey() + " choice=" + choice
-								+ " confidence=" + confidence + " expectedManeuver=" + maneuver + " reason=" + reason);
-						continue;
-					}
-					boolean duplicate = false;
-					for (Map.Entry<Integer, Integer> assigned : plan.moveGoals.entrySet()) {
-						if (assigned.getValue() == destination.cell && assigned.getKey() != destination.memberId) {
-							duplicate = true;
-							break;
-						}
-					}
-					boolean sameApproach = SquadMovementPlanner.conflictsWithAssignedFlank(destination,
-							plan.moveGoals, plan.moveGoalTypes, Dungeon.hero.pos, level.width());
-					if (duplicate || sameApproach) {
-						log("move_goal_rejected", "member=" + destination.memberId + " choice=" + choice
-								+ " confidence=" + confidence + " reason=" + (duplicate ? "duplicate_destination" : "duplicate_flank_sector"));
-						continue;
-					}
-					plan.moveGoals.put(destination.memberId, destination.cell);
-					plan.moveGoalTypes.put(destination.memberId, destination.maneuver);
-					log("move_goal", "member=" + member.getClass().getSimpleName() + "#" + member.id()
-							+ " maneuver=" + destination.maneuver + " destination="
-							+ destination.cell % level.width() + ":" + destination.cell / level.width()
-							+ " confidence=" + confidence);
-				}
-				for (Integer squadId : requestedSquads) {
-					Plan plan = plans.get(squadId);
-					if (plan == null || !("flank".equals(plan.tactic) || "escort_ranged".equals(plan.tactic))) continue;
-					ArrayList<Mob> members = MobSquads.members(level, squadId);
-					for (Mob member : members) {
-						String maneuver = requiredManeuver(plan, member);
-						if (maneuver == null || plan.moveGoals.containsKey(member.id())) continue;
-						for (SquadMovementPlanner.Candidate fallback : movementCandidates(member, members, level)) {
-							if (!maneuver.equals(fallback.maneuver) || !validMovementGoal(member, fallback.cell, level)) continue;
-							boolean duplicate = plan.moveGoals.containsValue(fallback.cell);
-							boolean sameApproach = SquadMovementPlanner.conflictsWithAssignedFlank(fallback,
-									plan.moveGoals, plan.moveGoalTypes, Dungeon.hero.pos, level.width());
-							if (duplicate || sameApproach) continue;
-							plan.moveGoals.put(member.id(), fallback.cell);
-							plan.moveGoalTypes.put(member.id(), maneuver);
-							log("move_goal_fallback", "member=" + member.getClass().getSimpleName() + "#" + member.id()
-									+ " maneuver=" + maneuver + " destination=" + fallback.cell % level.width()
-								+ ":" + fallback.cell / level.width() + " reason=missing_or_rejected_answer");
-							break;
-						}
-					}
-				}
 			}
 		} catch (Exception ignored) {
 			// Keep the built-in Mob state machine as a no-network/failure fallback.
@@ -655,17 +535,10 @@ public final class JevMobAI {
 		}
 	}
 
-	private static Mob findMember(Level level, int mobId) {
-		if (level == null || level.mobs == null) return null;
-		for (Mob member : level.mobs) if (member != null && member.id() == mobId && member.isAlive()) return member;
-		return null;
-	}
-
-	private static String requiredManeuver(Plan plan, Mob member) {
-		if (plan == null || member == null) return null;
-		if ("flank".equals(plan.tactic)) return "flank";
-		if ("escort_ranged".equals(plan.tactic)) return "tank".equals(member.squadRole) ? "escort" : "flank";
-		return null;
+	/** Walking steps from the member to the hero over the shared terrain map, or -1 when it cannot get there. */
+	private static int routeCostToHero(SquadMovementPlanner.Member member, int heroCell, SquadWorld world) {
+		int cost = FormationPlanner.heroMap(Collections.singletonList(member), heroCell, world)[member.cell];
+		return cost == SquadDijkstra.UNREACHABLE ? -1 : cost / SquadCostField.BASE;
 	}
 
 	private static boolean isRangedAttacker(Mob mob) {
@@ -679,68 +552,6 @@ public final class JevMobAI {
 	private static SquadMovementPlanner.Member plannerMember(Mob mob) {
 		return new SquadMovementPlanner.Member(mob.id(), mob.pos,
 				!"instinctive".equals(mob.tacticalIntelligence()), isRangedAttacker(mob), mob.squadRole, mob.speed());
-	}
-
-	private static SquadMovementPlanner.World movementWorld(final Mob member, final Level level) {
-		final boolean[] visible = member.fieldOfView;
-		return new SquadMovementPlanner.World() {
-			@Override public boolean visible(int cell) {
-				return visible != null && cell >= 0 && cell < visible.length && visible[cell];
-			}
-			@Override public boolean legal(SquadMovementPlanner.Member mover, int cell) {
-				return legalVisibleGoal(member, cell, level);
-			}
-			@Override public boolean reachable(SquadMovementPlanner.Member mover, int cell) {
-				return cell == member.pos || Dungeon.findPath(member, cell, level.passable, visible, true) != null;
-			}
-		};
-	}
-
-	private static ArrayList<SquadMovementPlanner.Candidate> movementCandidates(Mob member,
-			ArrayList<Mob> squad, Level level) {
-		ArrayList<SquadMovementPlanner.Member> plannerSquad = new ArrayList<>();
-		SquadMovementPlanner.Member plannerMover = null;
-		for (Mob mob : squad) {
-			SquadMovementPlanner.Member plannerMember = plannerMember(mob);
-			plannerSquad.add(plannerMember);
-			if (mob == member) plannerMover = plannerMember;
-		}
-		if (plannerMover == null || Dungeon.hero == null || level == null) return new ArrayList<>();
-		return SquadMovementPlanner.candidates(plannerMover, plannerSquad, Dungeon.hero.pos,
-				level.width(), level.height(), movementWorld(member, level));
-	}
-
-	private static boolean validMovementGoal(Mob member, int cell, Level level) {
-		if (!legalVisibleGoal(member, cell, level)) return false;
-		return cell == member.pos || Dungeon.findPath(member, cell, level.passable, member.fieldOfView, true) != null;
-	}
-
-	private static boolean legalVisibleGoal(Mob member, int cell, Level level) {
-		if (!level.insideMap(cell) || !level.passable[cell] || level.avoid[cell]
-				|| (Char.hasProp(member, Char.Property.LARGE) && !level.openSpace[cell])
-				|| (Actor.findChar(cell) != null && cell != member.pos)) return false;
-		if (member.fieldOfView == null || cell >= member.fieldOfView.length || !member.fieldOfView[cell]) return false;
-		return true;
-	}
-
-	private static int squadSpacing(int cell, Mob member, ArrayList<Mob> squad, Level level) {
-		int score = 0;
-		for (Mob other : squad) if (other != member) score += level.distance(cell, other.pos);
-		return score;
-	}
-
-	private static String moveChoiceDescription(SquadMovementPlanner.Candidate choice, int x, int y, Mob member,
-			ArrayList<Mob> squad, Level level) {
-		int heroDistance = SquadMovementPlanner.distance(choice.cell, Dungeon.hero.pos, level.width());
-		String sector = SquadMovementPlanner.directionName(SquadMovementPlanner.directionBucket(
-				choice.cell, Dungeon.hero.pos, level.width()));
-		if ("escort".equals(choice.maneuver)) {
-			return "Reachable goal (" + x + "," + y + "), " + sector + " of the hero at grid distance " + heroDistance
-					+ "; screen the visible ranged squadmate by moving between that ally and the hero.";
-		}
-		return "Reachable flank goal (" + x + "," + y + "), " + sector + " of the hero at grid distance " + heroDistance
-				+ "; use this approach sector and keep space from squadmates (spacing score "
-				+ squadSpacing(choice.cell, member, squad, level) + ").";
 	}
 
 	private static void buildRoleOptions(int roleIndex, ArrayList<Mob> members, ArrayList<String> roles,

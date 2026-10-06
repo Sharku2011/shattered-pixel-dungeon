@@ -7,17 +7,9 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
-/** Pure candidate generator for squad movement; the game adapter supplies visibility and path checks. */
+/** Pure goal assignment and local stepping for squad movement; the game adapter supplies the world. */
 final class SquadMovementPlanner {
-	interface World {
-		boolean visible(int cell);
-		boolean legal(Member mover, int cell);
-		boolean reachable(Member mover, int cell);
-	}
-
 	static final class Member {
 		final int id;
 		final int cell;
@@ -25,10 +17,6 @@ final class SquadMovementPlanner {
 		final boolean ranged;
 		final String role;
 		final float speed;
-
-		Member(int id, int cell, boolean tactical, boolean ranged, String role) {
-			this(id, cell, tactical, ranged, role, 1f);
-		}
 
 		Member(int id, int cell, boolean tactical, boolean ranged, String role, float speed) {
 			this.id = id;
@@ -40,44 +28,7 @@ final class SquadMovementPlanner {
 		}
 	}
 
-	static final class Candidate {
-		final int memberId;
-		final int cell;
-		final String maneuver;
-
-		Candidate(int memberId, int cell, String maneuver) {
-			this.memberId = memberId;
-			this.cell = cell;
-			this.maneuver = maneuver;
-		}
-	}
-
 	private SquadMovementPlanner() {}
-
-	static ArrayList<Candidate> candidates(Member mover, List<Member> squad, int heroCell,
-			int width, int height, World world) {
-		ArrayList<Candidate> result = new ArrayList<>();
-		if (mover == null || world == null || width <= 0 || !world.visible(heroCell)) return result;
-		if (mover.tactical) addFlank(result, mover, squad, heroCell, width, height, world);
-		addEscort(result, mover, squad, heroCell, width, height, world);
-		return result;
-	}
-
-	static String choiceKey(Candidate candidate, int width) {
-		return candidate.maneuver + "_" + candidate.cell % width + "_" + candidate.cell / width;
-	}
-
-	static boolean relevantForTactics(Candidate candidate, boolean flankAvailable,
-			boolean escortAvailable, boolean roleSelectionPending, boolean memberIsTank) {
-		if (candidate == null) return false;
-		if ("flank".equals(candidate.maneuver)) {
-			return flankAvailable || (escortAvailable && (roleSelectionPending || !memberIsTank));
-		}
-		if ("escort".equals(candidate.maneuver)) {
-			return escortAvailable && (roleSelectionPending || memberIsTank);
-		}
-		return false;
-	}
 
 	static int directionBucket(int cell, int heroCell, int width) {
 		int dx = cell % width - heroCell % width;
@@ -101,80 +52,6 @@ final class SquadMovementPlanner {
 			case 6: return "west";
 			default: return "northwest";
 		}
-	}
-
-	/** Resolves only an offered key, then repeats visibility, legality, reachability and role checks. */
-	static Candidate validateChoice(String key, Map<String, Candidate> offered, Member mover,
-			String expectedManeuver, World world) {
-		if (key == null || offered == null || mover == null || world == null) return null;
-		Candidate candidate = offered.get(key);
-		if (candidate == null || candidate.memberId != mover.id
-				|| !candidate.maneuver.equals(expectedManeuver)
-				|| !world.visible(candidate.cell) || !world.legal(mover, candidate.cell)
-				|| !world.reachable(mover, candidate.cell)) return null;
-		return candidate;
-	}
-
-	static boolean conflictsWithAssignedFlank(Candidate candidate, Map<Integer, Integer> assignedCells,
-			Map<Integer, String> assignedManeuvers, int heroCell, int width) {
-		if (candidate == null || !"flank".equals(candidate.maneuver)
-				|| assignedCells == null || assignedManeuvers == null) return false;
-		int direction = directionBucket(candidate.cell, heroCell, width);
-		for (Map.Entry<Integer, Integer> assigned : assignedCells.entrySet()) {
-			if (!"flank".equals(assignedManeuvers.get(assigned.getKey()))) continue;
-			if (directionBucket(assigned.getValue(), heroCell, width) == direction) return true;
-		}
-		return false;
-	}
-
-	private static void addFlank(ArrayList<Candidate> result, Member mover, List<Member> squad,
-			int heroCell, int width, int height, World world) {
-		int hx = heroCell % width;
-		int hy = heroCell / width;
-		ArrayList<Integer> cells = new ArrayList<>();
-		for (int dy = -4; dy <= 4; dy++) for (int dx = -4; dx <= 4; dx++) {
-			int heroDistance = Math.max(Math.abs(dx), Math.abs(dy));
-			if (heroDistance == 0 || heroDistance > 4) continue;
-			int x = hx + dx;
-			int y = hy + dy;
-			if (x < 0 || x >= width || y < 0 || y >= height) continue;
-			int cell = x + y * width;
-			if (cell != mover.cell && world.legal(mover, cell) && world.reachable(mover, cell)) cells.add(cell);
-		}
-		cells.sort((a, b) -> Integer.compare(flankScore(b, heroCell, mover, squad, width),
-				flankScore(a, heroCell, mover, squad, width)));
-		HashSet<Integer> sectors = new HashSet<>();
-		for (int cell : cells) {
-			if (sectors.add(directionBucket(cell, heroCell, width))) {
-				result.add(new Candidate(mover.id, cell, "flank"));
-				if (result.size() == 8) break;
-			}
-		}
-	}
-
-	private static int flankScore(int cell, int heroCell, Member mover, List<Member> squad, int width) {
-		int heroDistance = distance(cell, heroCell, width);
-		return spacing(cell, mover, squad, width) * 2 - Math.abs(heroDistance - 2) * 3;
-	}
-
-	private static void addEscort(ArrayList<Candidate> result, Member mover, List<Member> squad,
-			int heroCell, int width, int height, World world) {
-		Member rangedAlly = null;
-		for (Member member : squad) {
-			if (member != mover && member.ranged && world.visible(member.cell)) {
-				if ("dealer".equals(member.role)) { rangedAlly = member; break; }
-				if (rangedAlly == null) rangedAlly = member;
-			}
-		}
-		if (rangedAlly == null) return;
-		final Member screenTarget = rangedAlly;
-		Set<Integer> cells = new HashSet<>();
-		for (int cell : escortCells(heroCell, screenTarget.cell, width, height))
-			if (world.legal(mover, cell) && world.reachable(mover, cell)) cells.add(cell);
-		ArrayList<Integer> ordered = new ArrayList<>(cells);
-		ordered.sort(Comparator.comparingInt(cell -> Math.abs(distance(cell, heroCell, width) - 3)
-				+ Math.abs(distance(cell, screenTarget.cell, width) - 2)));
-		for (int i = 0; i < Math.min(8, ordered.size()); i++) result.add(new Candidate(mover.id, ordered.get(i), "escort"));
 	}
 
 	/** Cells around the 30/45/60% points of hero-to-ally, at least 2 from the hero and nearer the ally than the hero is. */
@@ -477,12 +354,6 @@ final class SquadMovementPlanner {
 		int[] out = new int[cells.size()];
 		for (int i = 0; i < out.length; i++) out[i] = cells.get(i);
 		return out;
-	}
-
-	private static int spacing(int cell, Member mover, List<Member> squad, int width) {
-		int score = 0;
-		for (Member other : squad) if (other != mover) score += distance(cell, other.cell, width);
-		return score;
 	}
 
 	static int distance(int a, int b, int width) {
