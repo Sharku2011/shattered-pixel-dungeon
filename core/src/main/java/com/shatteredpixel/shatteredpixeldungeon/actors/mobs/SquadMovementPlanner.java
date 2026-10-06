@@ -260,7 +260,7 @@ final class SquadMovementPlanner {
 		}
 		ArrayList<Member> flankers = new ArrayList<>();
 		for (Member m : squad) if (m.tactical && !m.ranged && m.id != plan.frontId) flankers.add(m);
-		int flanks = front == null ? 0 : assignFlanks(plan, flankers, squad, heroCell, world);
+		int flanks = front == null ? 0 : assignFlanks(plan, plan.axisFrom, flankers, squad, heroCell, world);
 		if (flanks == 0 && !escorted && plan.degradeReason == null) plan.degradeReason = "no_open_sector";
 		return plan;
 	}
@@ -271,15 +271,16 @@ final class SquadMovementPlanner {
 		if (old != null && "escort".equals(old.maneuver)) {
 			Member ally = rangedAlly(member, squad, world);
 			Assignment e = ally == null ? null : escortAssignment(plan, member, ally.cell, squad, heroCell, world);
-			if (e == null) return false;
+			if (e == null) { plan.axisFrom = member.cell; return false; }
 			plan.byMember.put(member.id, e);
 			plan.axisFrom = e.goal;
 			return true;
 		}
-		if (!member.tactical || member.ranged || member.id == plan.frontId || plan.axisFrom < 0) return false;
+		int axis = flankAxis(plan, squad);
+		if (!member.tactical || member.ranged || member.id == plan.frontId || axis < 0) return false;
 		ArrayList<Member> one = new ArrayList<>();
 		one.add(member);
-		return assignFlanks(plan, one, squad, heroCell, world) > 0;
+		return assignFlanks(plan, axis, one, squad, heroCell, world) > 0;
 	}
 
 	/** Hero moved: keep the sector, move the goal to the cheapest legal ring cell of that sector (escort: recompute screen). */
@@ -297,7 +298,7 @@ final class SquadMovementPlanner {
 		for (int c : ring(heroCell, world.width(), world.height()))
 			if (directionBucket(c, heroCell, world.width()) == a.sector && goalLegal(member, c, heroCell, world)) cells.add(c);
 		if (cells.isEmpty()) return false;
-		SquadCostField f = field(plan, member, squad, heroCell, world, plan.axisFrom, -1, false);
+		SquadCostField f = field(plan, member, squad, heroCell, world, flankAxis(plan, squad), -1, false);
 		int[] d = SquadDijkstra.fromSource(f, member.cell, f.bounds(toArray(cells)));
 		int best = -1;
 		for (int c : cells) if (d[c] != SquadDijkstra.UNREACHABLE && (best < 0 || d[c] < d[best])) best = c;
@@ -306,19 +307,20 @@ final class SquadMovementPlanner {
 		return true;
 	}
 
-	/** One step toward the member's goal over the full per-turn cost field; -1 when no neighbour is free and no worse. */
+	/** Cheapest free neighbour by enterCost + remaining cost (only ones no worse than staying); -1 when none. */
 	static int nextStep(SquadPlan plan, Member mover, List<Member> squad, int heroCell, SquadWorld world) {
 		Assignment a = plan.byMember.get(mover.id);
 		if (a == null || find(squad, mover.id) == null) return -1;
-		SquadCostField f = field(plan, mover, squad, heroCell, world, "flank".equals(a.maneuver) ? plan.axisFrom : -1, a.goal, true);
+		SquadCostField f = field(plan, mover, squad, heroCell, world, "flank".equals(a.maneuver) ? flankAxis(plan, squad) : -1, a.goal, true);
 		int[] d = SquadDijkstra.toTarget(f, a.goal, f.bounds(a.goal));
-		int w = world.width(), h = world.height(), here = d[mover.cell], step = -1;
+		int w = world.width(), h = world.height(), here = d[mover.cell], step = -1, stepCost = Integer.MAX_VALUE;
 		for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
 			int x = mover.cell % w + dx, y = mover.cell / w + dy;
 			if ((dx == 0 && dy == 0) || x < 0 || y < 0 || x >= w || y >= h) continue;
 			int n = x + y * w;
 			if (d[n] == SquadDijkstra.UNREACHABLE || d[n] > here || !world.passable(mover, n) || world.occupied(n)) continue;
-			if (step < 0 || d[n] < d[step]) step = n;
+			int cost = f.enterCost(n) + d[n];
+			if (cost < stepCost) { step = n; stepCost = cost; }
 		}
 		if (step < 0) return -1;
 		ArrayList<Integer> path = new ArrayList<>();
@@ -353,9 +355,10 @@ final class SquadMovementPlanner {
 	}
 
 	/** Spec 5.4 steps 2-4: one Dijkstra per open flanker per round, cheapest (path + sector score) pair wins. */
-	private static int assignFlanks(SquadPlan plan, List<Member> flankers, List<Member> squad, int heroCell, SquadWorld world) {
+	private static int assignFlanks(SquadPlan plan, int axisFrom, List<Member> flankers, List<Member> squad, int heroCell,
+			SquadWorld world) {
 		int w = world.width();
-		int front = directionBucket(plan.axisFrom, heroCell, w);
+		int front = directionBucket(axisFrom, heroCell, w);
 		HashSet<Integer> used = new HashSet<>();
 		for (Assignment a : plan.byMember.values()) if ("flank".equals(a.maneuver)) used.add(a.sector);
 		ArrayList<Integer> ring = ring(heroCell, w, world.height());
@@ -375,7 +378,7 @@ final class SquadMovementPlanner {
 					if (!used.contains(s) && sectorDiff(s, front) >= 2 && goalLegal(m, c, heroCell, world)) cells.add(c);
 				}
 				if (cells.isEmpty()) { it.remove(); continue; }
-				SquadCostField f = field(plan, m, squad, heroCell, world, plan.axisFrom, -1, false);
+				SquadCostField f = field(plan, m, squad, heroCell, world, axisFrom, -1, false);
 				int[] d = SquadDijkstra.fromSource(f, m.cell, f.bounds(toArray(cells)));
 				boolean reachable = false;
 				for (int c : cells) {
@@ -423,6 +426,14 @@ final class SquadMovementPlanner {
 		a.allyCell = allyCell;
 		a.path = SquadDijkstra.tracePath(f, d, front.cell, best);
 		return a;
+	}
+
+	/** Flank axis origin: the escort goal while the front holds an escort, else the front's current cell (or the stored axis). */
+	private static int flankAxis(SquadPlan plan, List<Member> squad) {
+		Assignment e = plan.byMember.get(plan.frontId);
+		if (e != null && "escort".equals(e.maneuver)) return e.goal;
+		Member front = find(squad, plan.frontId);
+		return front != null ? front.cell : plan.axisFrom;
 	}
 
 	/** Ranged squadmate visible to the front member, dealer first (same preference as addEscort). */

@@ -91,6 +91,9 @@ public final class TacticalMovementPlannerSimulation {
 		singleSurvivorDegradesWithoutAssignments();
 		heroHiddenFromMemberGivesNoGoal();
 		memberStandingOnGoalStaysLegal();
+		nextStepSkipsPenalizedMinDistanceNeighbour();
+		nextStepAxisFollowsMovedFront();
+		failedEscortReassignResetsAxis();
 		System.out.println("Tactical movement simulations passed; assertions=" + assertions);
 	}
 
@@ -374,7 +377,7 @@ public final class TacticalMovementPlannerSimulation {
 		p.heroProximity = true; p.ownGoal = a.goal; p.axisFrom = plan.axisFrom; p.squadmateAdjacency = true;
 		SquadCostField f = new SquadCostField(map, mover, squad, hero, p);
 		int[] d = SquadDijkstra.toTarget(f, a.goal, f.bounds(a.goal));
-		check(d[step] < d[mover.cell], "next step lowers remaining cost");
+		check(f.enterCost(step) + d[step] == d[mover.cell], "next step lies on an optimal route");
 		check(a.path.get(0) == step && a.path.get(a.path.size() - 1) == a.goal, "path refreshed from step to goal");
 		map.occupy(step);
 		int other = SquadMovementPlanner.nextStep(plan, mover, squad, hero, map);
@@ -447,6 +450,75 @@ public final class TacticalMovementPlannerSimulation {
 		}
 		SquadMovementPlanner.Member other = arrived.get(1);
 		check(!SquadMovementPlanner.goalLegal(other, escortGoal, hero, map), "another member's cell stays illegal");
+	}
+
+	private static void nextStepSkipsPenalizedMinDistanceNeighbour() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(7, 7);
+		SquadMovementPlanner.Member tank = member(1, map.cell(7, 2), true, false, "tank");
+		SquadMovementPlanner.Member mover = member(2, map.cell(9, 9));
+		ArrayList<SquadMovementPlanner.Member> squad = squad(tank, mover);
+		occupyAll(map, hero, squad);
+		SquadMovementPlanner.SquadPlan plan = new SquadMovementPlanner.SquadPlan();
+		plan.frontId = 1;
+		plan.axisFrom = tank.cell;
+		SquadMovementPlanner.Assignment a = new SquadMovementPlanner.Assignment(2, "flank");
+		a.goal = map.cell(7, 8);
+		a.sector = 4;
+		a.heroCell = hero;
+		plan.byMember.put(2, a);
+		SquadCostField.Penalties p = new SquadCostField.Penalties();
+		p.heroProximity = true; p.ownGoal = a.goal; p.axisFrom = tank.cell; p.squadmateAdjacency = true;
+		SquadCostField f = new SquadCostField(map, mover, squad, hero, p);
+		int[] d = SquadDijkstra.toTarget(f, a.goal, f.bounds(a.goal));
+		int ring = map.cell(8, 8), side = map.cell(8, 9);
+		check(d[ring] == d[side] && f.enterCost(ring) > f.enterCost(side), "setup: penalized ring cell ties on remaining cost");
+		int step = SquadMovementPlanner.nextStep(plan, mover, squad, hero, map);
+		check(step == side && SquadMovementPlanner.distance(step, hero, map.width) > 1, "step avoids penalized ring cell: " + step);
+		check(f.enterCost(step) + d[step] == d[mover.cell], "chosen step is cost-optimal");
+	}
+
+	private static void nextStepAxisFollowsMovedFront() {
+		SquadTestMap map = new SquadTestMap(15, 15);
+		int hero = map.cell(7, 7);
+		SquadMovementPlanner.Member mover = member(2, map.cell(2, 5));
+		ArrayList<SquadMovementPlanner.Member> squad = squad(member(1, map.cell(2, 7), true, false, "tank"), mover);
+		occupyAll(map, hero, squad);
+		SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign("flank", squad, hero, map);
+		SquadMovementPlanner.Assignment a = plan.byMember.get(2);
+		map.occupied[map.cell(2, 7)] = false;
+		SquadMovementPlanner.Member moved = member(1, map.cell(2, 3), true, false, "tank");
+		map.occupy(moved.cell);
+		ArrayList<SquadMovementPlanner.Member> now = squad(moved, mover);
+		int step = SquadMovementPlanner.nextStep(plan, mover, now, hero, map);
+		int[] costs = new int[2];
+		int[] axes = {moved.cell, plan.axisFrom};
+		for (int i = 0; i < 2; i++) {
+			SquadCostField.Penalties p = new SquadCostField.Penalties();
+			p.heroProximity = true; p.ownGoal = a.goal; p.axisFrom = axes[i]; p.squadmateAdjacency = true;
+			SquadCostField f = new SquadCostField(map, mover, now, hero, p);
+			int[] d = SquadDijkstra.toTarget(f, a.goal, f.bounds(a.goal));
+			int sum = 0;
+			for (int c : a.path) sum += f.enterCost(c);
+			costs[i] = sum - d[mover.cell];
+			if (i == 0) check(step >= 0 && f.enterCost(step) + d[step] == d[mover.cell], "step optimal under the moved front's axis");
+		}
+		check(costs[0] == 0, "refreshed path optimal under the moved front's axis");
+		check(costs[1] != 0, "refreshed path is not the stale-axis route: " + pathString(map, a.path));
+	}
+
+	private static void failedEscortReassignResetsAxis() {
+		SquadTestMap map = new SquadTestMap(15, 13);
+		int hero = map.cell(2, 6);
+		SquadMovementPlanner.Member tank = member(20, map.cell(4, 4), true, false, "tank");
+		SquadMovementPlanner.Member ranged = member(21, map.cell(10, 6), true, true, "dealer");
+		ArrayList<SquadMovementPlanner.Member> squad = squad(tank, ranged);
+		occupyAll(map, hero, squad);
+		SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign("escort_ranged", squad, hero, map);
+		check(plan.byMember.containsKey(20) && plan.axisFrom == plan.byMember.get(20).goal, "escort axis set");
+		map.hide(ranged.cell);
+		check(!SquadMovementPlanner.reassign(plan, tank, squad, hero, map), "escort reassign fails without visible ally");
+		check(!plan.byMember.containsKey(20) && plan.axisFrom == tank.cell, "failed escort reassign resets axis to front cell");
 	}
 
 	private static void checkSectors(SquadTestMap map, SquadMovementPlanner.SquadPlan plan, int hero) {
