@@ -13,7 +13,7 @@ Pick the build type from the request (default: debug):
 
 Rules:
 - Run only the Gradle command above (PowerShell). Do not edit files, fix code, commit, or run anything else.
-- Use a long timeout (600000 ms); run in background if needed and wait for completion.
+- Run the command in the FOREGROUND in a single PowerShell call with `timeout: 600000`. Never set `run_in_background`, never sleep, poll, or wait separately — the call returns as soon as Gradle finishes (an up-to-date build takes ~1s).
 - Report only the result:
   - Success: one line, "BUILD SUCCESSFUL" plus the build type and duration.
   - Failure: "BUILD FAILED" plus the build type, then only the relevant log: compiler errors (file:line + message), the "What went wrong" section, and the failing task. Omit progress noise and warnings.
