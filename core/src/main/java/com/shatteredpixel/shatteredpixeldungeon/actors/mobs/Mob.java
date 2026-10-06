@@ -805,35 +805,6 @@ public abstract class Mob extends Char {
 		}
 	}
 
-	/** Moves toward an open tile adjacent to the enemy, preferring space away from squadmates. */
-	private boolean moveToFlankingPosition(Char targetChar) {
-		if (targetChar == null || Dungeon.level == null) return false;
-		int bestCell = -1;
-		int bestSpacing = Integer.MIN_VALUE;
-		for (int offset : PathFinder.NEIGHBOURS8) {
-			int cell = targetChar.pos + offset;
-			if (cell < 0 || cell >= Dungeon.level.length()
-					|| Math.abs(cell % Dungeon.level.width() - targetChar.pos % Dungeon.level.width()) > 1
-					|| Math.abs(cell / Dungeon.level.width() - targetChar.pos / Dungeon.level.width()) > 1) continue;
-			if (!Dungeon.level.passable[cell]
-					|| Dungeon.level.avoid[cell] || Actor.findChar(cell) != null) continue;
-			int spacing = 0;
-			if (squadId >= 0) {
-				for (Mob member : MobSquads.members(Dungeon.level, squadId)) {
-					if (member != this && member.enemy == targetChar) {
-						spacing += Dungeon.level.distance(cell, member.pos);
-					}
-				}
-			}
-			if (spacing > bestSpacing) {
-				bestSpacing = spacing;
-				bestCell = cell;
-			}
-		}
-		if (bestCell == -1 || bestCell == pos) return false;
-		return getCloser(bestCell);
-	}
-
 	CharSprite movementShadow;
 	AlphaTweener shadowFade;
 
@@ -1486,34 +1457,22 @@ public abstract class Mob extends Char {
 		public boolean act( boolean enemyInFOV, boolean justAlerted ) {
 			enemySeen = enemyInFOV;
 
-			// Jev supplies a cached squad tactic; local AI resolves legal per-turn actions.
+			// Jev supplies a cached squad tactic; local planners resolve legal per-turn steps.
 			String tactic = JevMobAI.tacticFor(Mob.this);
-			String intelligence = tacticalIntelligence();
-			boolean hasValidatedTacticalGoal = false;
-			if (enemyInFOV && enemy != null) {
-				String maneuver = "flank".equals(tactic) ? "flank"
-						: "escort_ranged".equals(tactic) ? ("tank".equals(squadRole) ? "escort" : "flank") : null;
-				boolean canFollowPlan = maneuver != null
-						&& (!"instinctive".equals(intelligence) || "escort".equals(maneuver));
-				int destination = canFollowPlan ? JevMobAI.destinationFor(Mob.this, maneuver) : -1;
-				hasValidatedTacticalGoal = destination >= 0;
-				if (destination >= 0 && destination != pos) {
-					int oldPos = pos;
-					if (getCloser(destination)) {
-						JevMobAI.logMoveStep(Mob.this, maneuver, oldPos, pos, destination);
-						spend(1 / speed());
-						return moveSprite(oldPos, pos);
-					}
-					JevMobAI.logMoveBlocked(Mob.this, maneuver, oldPos, destination);
+			if (enemyInFOV && enemy != null && !rooted && !(canAttack(enemy) && !isCharmedBy(enemy))) {
+				int step = JevMobAI.tacticalStep(Mob.this, tactic);
+				if (step == pos) {
+					spend(1 / speed());
+					return true;
 				}
-			}
-			if ("flank".equals(tactic) && !"instinctive".equals(intelligence)
-					&& enemyInFOV && enemy != null && !canAttack(enemy) && !hasValidatedTacticalGoal) {
-				int oldPos = pos;
-				if (moveToFlankingPosition(enemy)) {
+				if (step >= 0 && cellIsPathable(step)) {
+					int oldPos = pos;
+					move(step);
+					JevMobAI.logMoveStep(Mob.this, tactic, oldPos, pos);
 					spend(1 / speed());
 					return moveSprite(oldPos, pos);
 				}
+				if (step >= 0) JevMobAI.logMoveBlocked(Mob.this, tactic, pos);
 			}
 
 			if (enemyInFOV && !isCharmedBy( enemy ) && canAttack( enemy )) {

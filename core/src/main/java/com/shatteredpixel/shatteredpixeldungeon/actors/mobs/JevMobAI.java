@@ -65,6 +65,11 @@ public final class JevMobAI {
 		boolean requestAttempted;
 		final Map<Integer, Integer> moveGoals = new HashMap<>();
 		final Map<Integer, String> moveGoalTypes = new HashMap<>();
+		SquadMovementPlanner.SquadPlan squadPlan;
+		FormationPlanner.State formation;
+		boolean degradeLogged;
+		/** Tactic that squadPlan/formation were built for; a different tactic discards both. */
+		String plannedTactic;
 	}
 
 	private JevMobAI() {}
@@ -103,30 +108,172 @@ public final class JevMobAI {
 		plans.remove(squadId);
 	}
 
-	static int destinationFor(Mob mob, String maneuver) {
-		if (mob == null || mob.squadId < 0) return -1;
+	/** Local squad step for this mob: -1 = default AI, mob.pos = wait, otherwise the cell to move to. */
+	static int tacticalStep(Mob mob, String tactic) {
+		Level level = Dungeon.level;
+		Hero hero = Dungeon.hero;
+		if (mob == null || level == null || hero == null || tactic == null || mob.squadId < 0 || mob.enemy != hero) return -1;
+		boolean[] fov = mob.fieldOfView;
+		if (fov == null || hero.pos < 0 || hero.pos >= fov.length || !fov[hero.pos]) return -1;
+		boolean squadTactic = "flank".equals(tactic) || "escort_ranged".equals(tactic);
+		if (!squadTactic && !"formation".equals(tactic)) return -1;
 		Plan plan = plans.get(mob.squadId);
-		if (plan == null || !maneuver.equals(plan.moveGoalTypes.get(mob.id()))) return -1;
-		int cell = plan.moveGoals.getOrDefault(mob.id(), -1);
-		if (cell < 0 || Dungeon.level == null || !legalVisibleGoal(mob, cell, Dungeon.level)) {
-			plan.moveGoals.remove(mob.id());
-			plan.moveGoalTypes.remove(mob.id());
-			log("move_goal_rejected", "member=" + mob.getClass().getSimpleName() + "#" + mob.id()
-					+ " destination=" + cell + " reason=became_invalid");
+		if (plan == null) return -1;
+		ArrayList<Mob> mobs = MobSquads.members(level, mob.squadId);
+		ArrayList<SquadMovementPlanner.Member> squad = new ArrayList<>();
+		SquadMovementPlanner.Member mover = null;
+		for (Mob member : mobs) {
+			SquadMovementPlanner.Member planned = plannerMember(member);
+			squad.add(planned);
+			if (member == mob) mover = planned;
+		}
+		if (mover == null || squad.size() < 2) return -1;
+		if (!tactic.equals(plan.plannedTactic)) {
+			plan.plannedTactic = tactic;
+			plan.squadPlan = null;
+			plan.formation = null;
+			plan.degradeLogged = false;
+		}
+		SquadWorld world = gameWorld(level, mobs);
+		return squadTactic ? squadStep(plan, tactic, mob, mover, squad, mobs, hero.pos, world)
+				: formationStep(plan, tactic, mob, mover, squad, hero.pos, world);
+	}
+
+	private static int squadStep(Plan plan, String tactic, Mob mob, SquadMovementPlanner.Member mover,
+			ArrayList<SquadMovementPlanner.Member> squad, ArrayList<Mob> mobs, int heroCell, SquadWorld world) {
+		if (plan.squadPlan == null) assignSquad(plan, tactic, squad, mobs, heroCell, world);
+		SquadMovementPlanner.Assignment a = plan.squadPlan.byMember.get(mover.id);
+		if (a != null && !SquadMovementPlanner.goalLegal(mover, a.goal, heroCell, world)) {
+			SquadMovementPlanner.reassign(plan.squadPlan, mover, squad, heroCell, world);
+			a = plan.squadPlan.byMember.get(mover.id);
+			logReassigned(mob, a, "invalid");
+		}
+		if (a != null && a.heroCell != heroCell) {
+			if (SquadMovementPlanner.retarget(plan.squadPlan, mover, squad, heroCell, world)) {
+				logReassigned(mob, a, "hero_moved");
+			} else {
+				assignSquad(plan, tactic, squad, mobs, heroCell, world);
+				a = plan.squadPlan.byMember.get(mover.id);
+				logReassigned(mob, a, "sector_lost");
+			}
+		}
+		if (a != null && "escort".equals(a.maneuver)) {
+			SquadMovementPlanner.Member ally = SquadMovementPlanner.rangedAlly(mover, squad, world);
+			if (ally == null || ally.cell != a.allyCell) {
+				assignSquad(plan, tactic, squad, mobs, heroCell, world);
+				a = plan.squadPlan.byMember.get(mover.id);
+				logReassigned(mob, a, "ally_moved");
+			}
+		}
+		if (a == null) return -1;
+		// An escort standing on its goal holds the screen instead of drifting back to the default AI.
+		if ("escort".equals(a.maneuver) && a.goal == mob.pos) return mob.pos;
+		int step = SquadMovementPlanner.nextStep(plan.squadPlan, mover, squad, heroCell, world);
+		if (step < 0 && a.goal != mob.pos) logMoveBlocked(mob, tactic, mob.pos);
+		return step;
+	}
+
+	private static void assignSquad(Plan plan, String tactic, ArrayList<SquadMovementPlanner.Member> squad,
+			ArrayList<Mob> mobs, int heroCell, SquadWorld world) {
+		plan.squadPlan = SquadMovementPlanner.assign(tactic, squad, heroCell, world);
+		for (SquadMovementPlanner.Assignment a : plan.squadPlan.byMember.values()) {
+			log("move_goal", "member=" + memberLabel(a.memberId, mobs) + " maneuver=" + a.maneuver
+					+ " destination=" + coordinates(a.goal));
+		}
+		logDegraded(plan, tactic, plan.squadPlan.degradeReason, mobs.get(0).squadId);
+	}
+
+	private static int formationStep(Plan plan, String tactic, Mob mob, SquadMovementPlanner.Member mover,
+			ArrayList<SquadMovementPlanner.Member> squad, int heroCell, SquadWorld world) {
+		String reason = FormationPlanner.degradeReason(squad);
+		if ("too_few_melee".equals(reason)) {
+			logDegraded(plan, tactic, reason, mob.squadId);
 			return -1;
 		}
-		return cell;
+		String before = null;
+		if (plan.formation == null) {
+			plan.formation = new FormationPlanner.State();
+			logDegraded(plan, tactic, reason, mob.squadId);
+		} else before = plan.formation.phase;
+		int step = FormationPlanner.step(plan.formation, mover, squad, heroCell, world);
+		String after = plan.formation.phase;
+		String member = mob.getClass().getSimpleName() + "#" + mob.id();
+		if ("released".equals(after)) {
+			if (!"released".equals(before)) log("formation_released", "squad=" + mob.squadId + " member=" + member
+					+ " reason=" + plan.formation.releaseReason);
+		} else if (!after.equals(before)) {
+			log("formation_phase", "squad=" + mob.squadId + " member=" + member + " phase=" + after);
+		}
+		return step == FormationPlanner.RELEASED ? -1 : step;
 	}
 
-	static void logMoveStep(Mob mob, String maneuver, int from, int to, int goal) {
+	private static void logDegraded(Plan plan, String tactic, String reason, int squadId) {
+		if (reason == null || plan.degradeLogged) return;
+		plan.degradeLogged = true;
+		log("tactic_degraded", "squad=" + squadId + " tactic=" + tactic + " reason=" + reason);
+	}
+
+	private static void logReassigned(Mob mob, SquadMovementPlanner.Assignment a, String reason) {
+		log("move_goal_reassigned", "member=" + mob.getClass().getSimpleName() + "#" + mob.id()
+				+ " maneuver=" + (a == null ? "none" : a.maneuver)
+				+ " destination=" + (a == null ? "none" : coordinates(a.goal)) + " reason=" + reason);
+	}
+
+	private static String memberLabel(int id, List<Mob> mobs) {
+		for (Mob m : mobs) if (m.id() == id) return m.getClass().getSimpleName() + "#" + id;
+		return "Mob#" + id;
+	}
+
+	/** Game adapter for the pure planners; passability is copied per member because findPassable returns a shared array. */
+	private static SquadWorld gameWorld(final Level level, List<Mob> squad) {
+		final Map<Integer, Mob> byId = new HashMap<>();
+		for (Mob m : squad) byId.put(m.id(), m);
+		final Map<Integer, boolean[]> passable = new HashMap<>();
+		return new SquadWorld() {
+			@Override public int width() { return level.width(); }
+			@Override public int height() { return level.height(); }
+			@Override public boolean passable(SquadMovementPlanner.Member mover, int cell) {
+				if (cell < 0 || cell >= level.length()) return false;
+				boolean[] cells = passable.get(mover.id);
+				if (cells == null) {
+					Mob mob = byId.get(mover.id);
+					if (mob == null) return false;
+					cells = Dungeon.findPassable(mob, level.passable, mob.fieldOfView, false, true).clone();
+					passable.put(mover.id, cells);
+				}
+				return cell < cells.length && cells[cell];
+			}
+			@Override public boolean occupied(int cell) {
+				return cell >= 0 && cell < level.length() && Actor.findChar(cell) != null;
+			}
+			@Override public boolean visible(SquadMovementPlanner.Member mover, int cell) {
+				Mob mob = byId.get(mover.id);
+				boolean[] fov = mob == null ? null : mob.fieldOfView;
+				return fov != null && cell >= 0 && cell < fov.length && fov[cell];
+			}
+		};
+	}
+
+	/** {maneuver, goal} for the move logs: the squad assignment, the hero cell for formation, else the tactic and none. */
+	private static String[] stepContext(Mob mob, String tactic) {
+		Plan plan = mob.squadId < 0 ? null : plans.get(mob.squadId);
+		SquadMovementPlanner.Assignment a = plan == null || plan.squadPlan == null ? null : plan.squadPlan.byMember.get(mob.id());
+		if (a != null) return new String[]{a.maneuver, coordinates(a.goal)};
+		if ("formation".equals(tactic) && Dungeon.hero != null) return new String[]{"formation", coordinates(Dungeon.hero.pos)};
+		return new String[]{tactic, "none"};
+	}
+
+	static void logMoveStep(Mob mob, String tactic, int from, int to) {
+		String[] context = stepContext(mob, tactic);
 		log("move_step", "member=" + mob.getClass().getSimpleName() + "#" + mob.id()
-				+ " maneuver=" + maneuver + " from=" + coordinates(from) + " to=" + coordinates(to)
-				+ " goal=" + coordinates(goal));
+				+ " maneuver=" + context[0] + " from=" + coordinates(from) + " to=" + coordinates(to)
+				+ " goal=" + context[1]);
 	}
 
-	static void logMoveBlocked(Mob mob, String maneuver, int from, int goal) {
+	static void logMoveBlocked(Mob mob, String tactic, int from) {
+		String[] context = stepContext(mob, tactic);
 		log("move_step_blocked", "member=" + mob.getClass().getSimpleName() + "#" + mob.id()
-				+ " maneuver=" + maneuver + " from=" + coordinates(from) + " goal=" + coordinates(goal));
+				+ " maneuver=" + context[0] + " from=" + coordinates(from) + " goal=" + context[1]);
 	}
 
 	private static String coordinates(int cell) {
@@ -520,7 +667,7 @@ public final class JevMobAI {
 
 	private static SquadMovementPlanner.Member plannerMember(Mob mob) {
 		return new SquadMovementPlanner.Member(mob.id(), mob.pos,
-				!"instinctive".equals(mob.tacticalIntelligence()), isRangedAttacker(mob), mob.squadRole);
+				!"instinctive".equals(mob.tacticalIntelligence()), isRangedAttacker(mob), mob.squadRole, mob.speed());
 	}
 
 	private static SquadMovementPlanner.World movementWorld(final Mob member, final Level level) {

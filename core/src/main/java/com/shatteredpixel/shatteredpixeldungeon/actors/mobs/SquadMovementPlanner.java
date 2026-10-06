@@ -437,7 +437,7 @@ final class SquadMovementPlanner {
 	}
 
 	/** Ranged squadmate visible to the front member, dealer first (same preference as addEscort). */
-	private static Member rangedAlly(Member front, List<Member> squad, SquadWorld world) {
+	static Member rangedAlly(Member front, List<Member> squad, SquadWorld world) {
 		Member ally = null;
 		for (Member m : squad) {
 			if (m.id == front.id || !m.ranged || !world.visible(front, m.cell)) continue;
