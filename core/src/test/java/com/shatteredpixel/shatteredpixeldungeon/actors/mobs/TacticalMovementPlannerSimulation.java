@@ -2,6 +2,7 @@ package com.shatteredpixel.shatteredpixeldungeon.actors.mobs;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -76,6 +77,7 @@ public final class TacticalMovementPlannerSimulation {
 		dijkstraMatchesBfsWithUniformCost();
 		weightedCostIsRespected();
 		boundsClampAtMapCorner();
+		costFieldAppliesSpecPenalties();
 		System.out.println("Tactical movement simulations passed; assertions=" + assertions);
 	}
 
@@ -117,6 +119,47 @@ public final class TacticalMovementPlannerSimulation {
 		check(b.minX == 0 && b.minY == 0 && b.maxX == 5 && b.maxY == 5, "bounds clamp to map");
 		int[] d = SquadDijkstra.fromSource(uniform(map), map.cell(1, 1), b);
 		check(d[map.cell(8, 8)] == SquadDijkstra.UNREACHABLE, "outside bounds stays unreachable");
+	}
+
+	private static void costFieldAppliesSpecPenalties() {
+		SquadTestMap map = new SquadTestMap(17, 17);
+		int hero = map.cell(8, 8);
+		map.occupy(hero);
+		SquadMovementPlanner.Member front = member(1, map.cell(3, 8)), mover = member(2, map.cell(3, 10)), mate = member(3, map.cell(12, 12));
+		SquadCostField.Penalties p = new SquadCostField.Penalties();
+		p.heroProximity = true; p.ownGoal = map.cell(9, 9); p.axisFrom = front.cell;
+		p.reservations.add(Arrays.asList(map.cell(5, 14), map.cell(6, 14)));
+		p.squadmateAdjacency = true;
+		ArrayList<SquadMovementPlanner.Member> squad = squad(front, mover, mate);
+		SquadCostField f = new SquadCostField(map, mover, squad, hero, p);
+		check(f.enterCost(map.cell(9, 9)) == 20, "own goal exempt from ring1 (10 + axis far 10)");
+		check(f.enterCost(map.cell(9, 7)) == 60, "ring1 = 10+40, plus axis far 10");
+		check(f.enterCost(map.cell(10, 10)) == 25, "ring2 = 10+15");
+		check(f.enterCost(map.cell(5, 8)) == 40 && f.axisDistance(map.cell(5, 8)) == 0, "on axis = 10+30");
+		check(f.axisDistance(hero) == 1, "hero cell is not an axis cell");
+		check(f.enterCost(map.cell(5, 10)) == 20, "axis distance 2 = 10+10");
+		check(f.enterCost(map.cell(5, 14)) == 35, "reserved = 10+25");
+		check(f.enterCost(map.cell(4, 14)) == 20, "reserved-adjacent = 10+10");
+		check(f.enterCost(map.cell(12, 13)) == 25, "squadmate-adjacent = 10+15");
+		check(f.enterCost(map.cell(14, 2)) == 10, "plain floor = base");
+		check(!f.passable(hero) && f.passable(mate.cell), "hero blocked, squadmate cell walkable");
+		SquadMovementPlanner.Member other = member(4, map.cell(11, 12));
+		SquadCostField two = new SquadCostField(map, mover, squad(front, mover, mate, other), hero, p);
+		check(two.enterCost(map.cell(12, 13)) == 25 && two.enterCost(map.cell(11, 13)) == 25, "squadmate adjacency does not stack");
+		check(two.enterCost(map.cell(5, 14)) == 35, "reserved cell gets RESERVED only");
+		SquadCostField none = new SquadCostField(map, mover, squad, hero, new SquadCostField.Penalties());
+		check(none.axisDistance(map.cell(5, 8)) == Integer.MAX_VALUE && none.enterCost(map.cell(5, 8)) == 10, "no axis, no penalties");
+		SquadDijkstra.Bounds b = f.bounds(map.cell(9, 9));
+		int[] d = SquadDijkstra.toTarget(f, map.cell(9, 9), b);
+		check(d[map.cell(9, 9)] == 0 && d[mover.cell] != SquadDijkstra.UNREACHABLE, "toTarget over cost field reaches mover");
+		check(d[hero] == SquadDijkstra.UNREACHABLE, "hero cell unreachable as destination");
+		int[] s = SquadDijkstra.fromSource(f, mover.cell, b);
+		check(s[hero] == SquadDijkstra.UNREACHABLE && s[mover.cell] == 0 && s[map.cell(9, 9)] != SquadDijkstra.UNREACHABLE, "fromSource over cost field terminates, hero unreachable");
+		check(b.contains(hero, 17) && b.contains(mate.cell, 17) && b.contains(map.cell(9, 9), 17), "bounds cover hero, squad, extras");
+	}
+
+	private static SquadMovementPlanner.Member member(int id, int cell) {
+		return new SquadMovementPlanner.Member(id, cell, true, false, "melee");
 	}
 
 	private static SquadDijkstra.Graph uniform(SquadTestMap map) {
