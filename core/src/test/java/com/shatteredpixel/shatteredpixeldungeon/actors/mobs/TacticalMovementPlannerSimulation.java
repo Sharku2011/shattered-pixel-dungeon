@@ -90,6 +90,7 @@ public final class TacticalMovementPlannerSimulation {
 		largeMemberGoalsRespectOpenSpace();
 		singleSurvivorDegradesWithoutAssignments();
 		heroHiddenFromMemberGivesNoGoal();
+		memberStandingOnGoalStaysLegal();
 		System.out.println("Tactical movement simulations passed; assertions=" + assertions);
 	}
 
@@ -300,7 +301,7 @@ public final class TacticalMovementPlannerSimulation {
 					SquadMovementPlanner.Member m = null;
 					for (SquadMovementPlanner.Member s : squad) if (s.id == a.memberId) m = s;
 					check(goalLegal(map, m, a.goal, hero), "random goal legal");
-					check(!a.path.isEmpty() && a.path.get(a.path.size() - 1) == a.goal, "random path ends at goal");
+					check(a.goal == m.cell ? a.path.isEmpty() : !a.path.isEmpty() && a.path.get(a.path.size() - 1) == a.goal, "random path ends at goal");
 					int prev = m.cell;
 					for (int c : a.path) {
 						check(map.passable(m, c) && SquadMovementPlanner.distance(prev, c, map.width) == 1, "random path passable and contiguous");
@@ -418,6 +419,36 @@ public final class TacticalMovementPlannerSimulation {
 		check(plan.byMember.isEmpty() && "no_open_sector".equals(plan.degradeReason), "hidden hero yields no goals");
 	}
 
+	private static void memberStandingOnGoalStaysLegal() {
+		SquadTestMap map = new SquadTestMap(15, 13);
+		int hero = map.cell(2, 6);
+		SquadMovementPlanner.Member tank = member(20, map.cell(4, 4), true, false, "tank");
+		ArrayList<SquadMovementPlanner.Member> squad = squad(tank, member(21, map.cell(10, 6), true, true, "dealer"), member(22, map.cell(6, 9)));
+		occupyAll(map, hero, squad);
+		SquadMovementPlanner.SquadPlan plan = SquadMovementPlanner.assign("escort_ranged", squad, hero, map);
+		SquadMovementPlanner.Assignment e = plan.byMember.get(20), f = plan.byMember.get(22);
+		check(e != null && f != null && "flank".equals(f.maneuver), "escort and flank assigned before arrival");
+		int escortGoal = e.goal, flankGoal = f.goal;
+		ArrayList<SquadMovementPlanner.Member> arrived = new ArrayList<>();
+		for (SquadMovementPlanner.Member m : squad) {
+			int at = m.id == 20 ? escortGoal : m.id == 22 ? flankGoal : m.cell;
+			map.occupied[m.cell] = false;
+			map.occupy(at);
+			arrived.add(new SquadMovementPlanner.Member(m.id, at, m.tactical, m.ranged, m.role));
+		}
+		for (SquadMovementPlanner.Member m : arrived) {
+			if (m.id == 21) continue;
+			SquadMovementPlanner.Assignment a = plan.byMember.get(m.id);
+			check(map.occupied(m.cell) && SquadMovementPlanner.goalLegal(m, a.goal, hero, map), "own occupied goal stays legal");
+			check(SquadMovementPlanner.retarget(plan, m, arrived, hero, map) && plan.byMember.get(m.id).goal == m.cell, "retarget keeps own cell as goal");
+			check(SquadMovementPlanner.nextStep(plan, m, arrived, hero, map) == -1, "member on goal takes no step");
+			check(SquadMovementPlanner.reassign(plan, m, arrived, hero, map) && plan.byMember.get(m.id).goal == m.cell
+					&& plan.byMember.get(m.id).path.isEmpty(), "reassign keeps own cell as goal");
+		}
+		SquadMovementPlanner.Member other = arrived.get(1);
+		check(!SquadMovementPlanner.goalLegal(other, escortGoal, hero, map), "another member's cell stays illegal");
+	}
+
 	private static void checkSectors(SquadTestMap map, SquadMovementPlanner.SquadPlan plan, int hero) {
 		Set<Integer> sectors = new HashSet<>();
 		int front = SquadMovementPlanner.directionBucket(plan.axisFrom, hero, map.width);
@@ -431,7 +462,7 @@ public final class TacticalMovementPlannerSimulation {
 	}
 
 	private static boolean goalLegal(SquadTestMap map, SquadMovementPlanner.Member m, int c, int hero) {
-		return map.passable(m, c) && !map.occupied(c) && map.visible(m, c) && map.visible(m, hero);
+		return map.passable(m, c) && (c == m.cell || !map.occupied(c)) && map.visible(m, c) && map.visible(m, hero);
 	}
 
 	private static SquadTestMap corridor(int size) {

@@ -223,9 +223,10 @@ final class SquadMovementPlanner {
 		return Math.min(d, 8 - d);
 	}
 
-	/** A goal must be walkable for the member, free, and both it and the hero must be visible to the member. */
+	/** A goal must be walkable for the member, free (its own cell counts as free), and it and the hero visible to it. */
 	static boolean goalLegal(Member m, int cell, int heroCell, SquadWorld world) {
-		return world.passable(m, cell) && !world.occupied(cell) && world.visible(m, cell) && world.visible(m, heroCell);
+		return world.passable(m, cell) && (cell == m.cell || !world.occupied(cell))
+				&& world.visible(m, cell) && world.visible(m, heroCell);
 	}
 
 	static int frontMember(List<Member> squad, int heroCell, SquadWorld world) {
