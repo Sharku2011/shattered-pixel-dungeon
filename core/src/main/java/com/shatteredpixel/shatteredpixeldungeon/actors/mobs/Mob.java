@@ -1459,7 +1459,7 @@ public abstract class Mob extends Char {
 
 			// Jev supplies a cached squad tactic; local planners resolve legal per-turn steps.
 			String tactic = JevMobAI.tacticFor(Mob.this);
-			if (enemyInFOV && enemy != null && !rooted && !(canAttack(enemy) && !isCharmedBy(enemy))) {
+			if (enemyInFOV && enemy != null && !rooted && !isCharmedBy(enemy) && !canAttack(enemy)) {
 				int step = JevMobAI.tacticalStep(Mob.this, tactic);
 				if (step == pos) {
 					spend(1 / speed());

@@ -160,7 +160,9 @@ public final class JevMobAI {
 		if (a != null && "escort".equals(a.maneuver)) {
 			SquadMovementPlanner.Member ally = SquadMovementPlanner.rangedAlly(mover, squad, world);
 			if (ally == null || ally.cell != a.allyCell) {
-				assignSquad(plan, tactic, squad, mobs, heroCell, world);
+				// Only the escort moves its screen; the flankers keep their sectors and reservations.
+				if (!SquadMovementPlanner.reassign(plan.squadPlan, mover, squad, heroCell, world))
+					assignSquad(plan, tactic, squad, mobs, heroCell, world);
 				a = plan.squadPlan.byMember.get(mover.id);
 				logReassigned(mob, a, "ally_moved");
 			}
@@ -169,8 +171,17 @@ public final class JevMobAI {
 		// An escort standing on its goal holds the screen instead of drifting back to the default AI.
 		if ("escort".equals(a.maneuver) && a.goal == mob.pos) return mob.pos;
 		int step = SquadMovementPlanner.nextStep(plan.squadPlan, mover, squad, heroCell, world);
-		if (step < 0 && a.goal != mob.pos) logMoveBlocked(mob, tactic, mob.pos);
-		return step;
+		if (step >= 0 || a.goal == mob.pos) return step;
+		// No step off the goal: try one fresh goal, then wait in place (spec 6.2 step 4).
+		boolean reassigned = SquadMovementPlanner.reassign(plan.squadPlan, mover, squad, heroCell, world);
+		a = plan.squadPlan.byMember.get(mover.id);
+		logReassigned(mob, a, "invalid");
+		if (!reassigned || a == null) return -1;
+		if ("escort".equals(a.maneuver) && a.goal == mob.pos) return mob.pos;
+		step = SquadMovementPlanner.nextStep(plan.squadPlan, mover, squad, heroCell, world);
+		if (step >= 0) return step;
+		logMoveBlocked(mob, tactic, mob.pos);
+		return mob.pos;
 	}
 
 	private static void assignSquad(Plan plan, String tactic, ArrayList<SquadMovementPlanner.Member> squad,
